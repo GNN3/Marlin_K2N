@@ -1,0 +1,50 @@
+{
+  "build": {
+    "core": "gd32",
+    "cpu": "cortex-m4",
+    "offset": "0x9000",
+    "extra_flags": "-DGD32F303RE -DGD32F303RET6 -DARDUINO_ARCH_MFL",
+    "f_cpu": "120000000L",
+    "mcu": "gd32f303ret6",
+    "mfl_series": "GD32F303RE",
+    "series": "GD32F303RE",
+    "product_line": "GD32F30X_HD",
+    "hwids": [
+      [
+        "0x1EAF",
+        "0x0003"
+      ],
+      [
+        "0x1EAF",
+        "0x0004"
+      ]
+    ],
+    "mfl_sub_series": "HD",
+    "variant": "MFL_AC_TRI"
+  },
+  "debug": {
+    "svd_path": "GD32F30x_HD.svd",
+    "openocd_extra_pre_target_args": [
+      "-c",
+      "set CPUTAPID 0x2BA01477"
+    ]
+  },
+  "frameworks": [
+    "arduino"
+  ],
+  "name": "AC_TRI_GD32 (96k RAM, 512k Flash)",
+  "upload": {
+    "disable_flushing": false,
+    "maximum_ram_size": 98304,
+    "maximum_size": 524288,
+    "protocol": "",
+    "protocols": [
+      ""
+    ],
+    "require_upload_port": true,
+    "use_1200bps_touch": false,
+    "wait_for_upload_port": false
+  },
+  "url": "https://www.gigadevice.com/microcontroller/gd32f303ret6",
+  "vendor": "GigaDevice"
+}

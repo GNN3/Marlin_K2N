@@ -28,7 +28,6 @@
 #endif
 
 #include <UsartSerial.hpp>
-
 #include "../../core/serial_hook.h"
 
 #define SERIAL_INDEX_MIN 0
@@ -43,26 +42,23 @@
 using namespace arduino;
 
 struct MarlinSerial : public UsartSerial {
+  // Статический метод получения инстанса (каст безопасен только если нет новых полей данных)
   static auto get_instance(usart::USART_Base Base, pin_size_t rxPin = NO_PIN, pin_size_t txPin = NO_PIN) -> MarlinSerial&;
 
   void begin(unsigned long baudrate, uint16_t config);
   inline void begin(unsigned long baudrate) { begin(baudrate, SERIAL_8N1); }
+
+  // ПЕРЕОПРЕДЕЛЕНИЕ: Ключевой момент для работы парсера без поломки приема
+  int read() override; 
+  
+  // Оставляем только проброс вызова, без вычитывания данных
   void updateRxDmaBuffer();
 
   #if DISABLED(SERIAL_DMA)
     FORCE_INLINE static uint8_t buffer_overruns() { return 0; }
   #endif
 
-  #if ENABLED(EMERGENCY_PARSER)
-    EmergencyParser::State emergency_state;
-
-    // Accessor method to get the last received byte
-    auto get_last_data() -> uint8_t { return usart_.get_last_data(); }
-
-    // Register the emergency callback
-    void register_emergency_callback(void (*callback)());
-  #endif
-
+  // ВНИМАНИЕ: Убраны поля данных (emergency_state), чтобы не коррумпировать память при cast
 protected:
   using UsartSerial::UsartSerial;
 };

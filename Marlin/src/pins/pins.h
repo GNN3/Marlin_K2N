@@ -942,6 +942,8 @@
   #include "gd32f3/pins_CREALITY_V422_GD32_MFL.h"   // GD32F303RE                           env:GD32F303RE_creality_mfl
 #elif MB(CREALITY_V427_GD32_MFL)
   #include "gd32f3/pins_CREALITY_V427_GD32_MFL.h"   // GD32F303RE                           env:GD32F303RE_creality_mfl
+#elif MB(AC_TRI_GD32_MFL)
+  #include "gd32f3/pins_AC_TRI_MFL.h"               // GD32F303RE                           env:GD32F303RE_AC_TRI_MFL
 
 //
 // Raspberry Pi RP2040

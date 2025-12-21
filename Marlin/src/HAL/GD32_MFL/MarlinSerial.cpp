@@ -29,12 +29,15 @@
 
 #if ENABLED(EMERGENCY_PARSER)
   #include "../../feature/e_parser.h"
+  // Храним состояние здесь, так как нельзя расширять размер класса при reinterpret_cast
+  static EmergencyParser::State local_emergency_state = EmergencyParser::State::EP_RESET;
 #endif
 
 using namespace arduino;
 
 auto MarlinSerial::get_instance(usart::USART_Base Base, pin_size_t rxPin, pin_size_t txPin) -> MarlinSerial& {
   auto& serial = UsartSerial::get_instance(Base, rxPin, txPin);
+  // Безопасно, так как мы не добавили новых полей данных в класс MarlinSerial
   return *reinterpret_cast<MarlinSerial*>(&serial);
 }
 
@@ -54,43 +57,33 @@ auto MarlinSerial::get_instance(usart::USART_Base Base, pin_size_t rxPin, pin_si
   MSerialT MSerial4(true, MarlinSerial::get_instance(usart::USART_Base::UART4_BASE, NO_PIN, NO_PIN));
 #endif
 
-#if ENABLED(EMERGENCY_PARSER)
-  // This callback needs to access the specific MarlinSerial instance
-  // We'll use a static pointer to track the current instance
-  static MarlinSerial* current_serial_instance = nullptr;
-
-  static void emergency_callback() {
-    if (!current_serial_instance) return;
-    const auto last_data = current_serial_instance->get_last_data();
-    emergency_parser.update(current_serial_instance->emergency_state, last_data);
-  }
-
-  void MarlinSerial::register_emergency_callback(void (*callback)()) {
-    usart_.register_interrupt_callback(usart::Interrupt_Type::INTR_RBNEIE, callback);
-  }
-#endif
-
 void MarlinSerial::begin(unsigned long baudrate, uint16_t config) {
+  // Просто запускаем штатный UART
   UsartSerial::begin(baudrate, config, ENABLED(SERIAL_DMA));
-  #if ENABLED(EMERGENCY_PARSER) && DISABLED(SERIAL_DMA)
-    current_serial_instance = this;
-    register_emergency_callback(emergency_callback);
+  
+  #if ENABLED(EMERGENCY_PARSER)
+    // Сброс состояния при рестарте порта
+    local_emergency_state = EmergencyParser::State::EP_RESET;
   #endif
 }
 
-void MarlinSerial::updateRxDmaBuffer() {
+// ГЛАВНОЕ ИСПРАВЛЕНИЕ:
+// Читаем байт штатным методом. Если он есть — скармливаем копию парсеру и возвращаем байт Марлину.
+// Никакие данные не теряются, прерывания не конфликтуют.
+int MarlinSerial::read() {
+  int c = UsartSerial::read();
+  
   #if ENABLED(EMERGENCY_PARSER)
-    // Get the number of bytes available in the receive buffer
-    const size_t available_bytes = usart_.available_for_read(true);
-
-    // Process only the available data
-    for (size_t i = 0; i < available_bytes; ++i) {
-      uint8_t data;
-      if (usart_.read_rx_buffer(data))
-        emergency_parser.update(emergency_state, data);
+    if (c >= 0) {
+      emergency_parser.update(local_emergency_state, (uint8_t)c);
     }
   #endif
-  // Call the base class implementation to handle any additional updates
+  
+  return c;
+}
+
+void MarlinSerial::updateRxDmaBuffer() {
+  // Только штатная логика MFL по переброске данных из DMA в RingBuffer
   UsartSerial::updateRxDmaBuffer();
 }
 
