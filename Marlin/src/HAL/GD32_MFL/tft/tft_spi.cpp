@@ -1,6 +1,6 @@
 // src/HAL/GD32_MFL/tft_spi.cpp
 #include "tft_spi.h"
-#include "../../../lcd/tft_io/ST7789v.h"
+//#include "../../../lcd/tft_io/ST7789v.h"
 #include "../../../lcd/tft_io/tft_io.h"
 #include "../HAL.h"
 #include "../../../inc/MarlinConfig.h"
@@ -52,16 +52,13 @@ void TFT_SPI::writeReg(uint16_t reg) {
 }
 
 void TFT_SPI::writeData(uint16_t data) {
-    // 1. DC = DATA (уже должно быть, но для надежности)
-    // hal_bridge::spi_dc_control_direct(true); 
-    
-    // 2. Отправляем ТОЛЬКО МЛАДШИЙ БАЙТ (8 бит)
+    // 1. Отправляем ТОЛЬКО МЛАДШИЙ БАЙТ (8 бит)
     // Марлин в tft_io.cpp сам разбивает 16-битные данные на два вызова writeData.
     hal_bridge::spi_write_byte_direct(data & 0xFF);
-    
-    // 3. Ждем (чтобы не нарушить порядок при быстрых вызовах)
+
+    // 2. Ждем (чтобы не нарушить порядок при быстрых вызовах)
     hal_bridge::spi_wait_for_tx_complete_direct();
-}
+} 
 
 // =========================================================
 // === УПРАВЛЕНИЕ ТРАНЗАКЦИЕЙ (ЗДЕСЬ ЖИВЕТ CS) ===
@@ -103,15 +100,18 @@ void TFT_SPI::writeSequence(const uint16_t *data, uint32_t count) {
     if (get_busy()) return;
     set_busy(true);
 
-    // Сами открываем транзакцию
     hal_bridge::spi_cs_control_direct(true); // CS Low
     hal_bridge::spi_dc_control_direct(true); // DATA
 
-    while (count--) {
-        uint16_t d = *data++;
-        // Здесь мы шлем 16 бит, так как это массив цветов/данных
-        hal_bridge::spi_write_byte_direct(d >> 8);   // MSB
-        hal_bridge::spi_write_byte_direct(d & 0xFF); // LSB
+    // Приводим данные к 8-битному виду для побайтовой отправки
+    const uint8_t *byte_stream = (const uint8_t *)data;
+
+    // Считаем общее количество байт (2 байта на 1 слово цвета)
+    uint32_t bytes_total = count * 2;
+
+    while (bytes_total--) {
+        // Берем текущий байт из потока и сдвигаемся к следующему
+        hal_bridge::spi_write_byte_direct(*byte_stream++); 
     }
 
     hal_bridge::spi_wait_for_tx_complete_direct();
@@ -124,16 +124,22 @@ void TFT_SPI::writeMultiple(uint16_t color, uint32_t count) {
     if (get_busy()) return;
     set_busy(true);
 
-    // Сами открываем транзакцию
     hal_bridge::spi_cs_control_direct(true); // CS Low
     hal_bridge::spi_dc_control_direct(true); // DATA
 
-    uint8_t hi = color >> 8;
-    uint8_t lo = color & 0xFF;
+    // 1. Получаем адрес переменной color и смотрим на неё как на массив байтов.
+    // Так как Марлин уже развернул байты, в памяти они лежат в нужном порядке:
+    // [0] -> Старший байт (MSB), [1] -> Младший байт (LSB)
+    const uint8_t *color_bytes = (const uint8_t *)&color;
+    
+    // 2. Кэшируем байты в локальные переменные, чтобы не обращаться 
+    // к стеку/памяти на каждой итерации цикла.
+    uint8_t byte_1 = color_bytes[0];
+    uint8_t byte_2 = color_bytes[1];
 
     while (count--) {
-        hal_bridge::spi_write_byte_direct(hi);
-        hal_bridge::spi_write_byte_direct(lo);
+        hal_bridge::spi_write_byte_direct(byte_1);
+        hal_bridge::spi_write_byte_direct(byte_2);
     }
 
     hal_bridge::spi_wait_for_tx_complete_direct();
@@ -162,58 +168,6 @@ void TFT_SPI::init() {
 // =========================================================
 
 uint32_t TFT_SPI::getID() { return 0x8552; } // ID для ST7789
-
-void TFT_SPI::setDisplayAddress(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    // Этот метод вызывается Марлином.
-    // Реализуем его через наши примитивы, управляя CS.
-    
-    if (get_busy()) return;
-    set_busy(true);
-    
-    uint16_t x2 = x + w - 1;
-    uint16_t y2 = y + h - 1;
-
-    hal_bridge::spi_cs_control_direct(true); // CS Low
-
-    // CASET
-    hal_bridge::spi_dc_control_direct(false); hal_bridge::spi_write_byte_direct(ST7789V_CASET);
-    hal_bridge::spi_dc_control_direct(true);
-    hal_bridge::spi_write_byte_direct(x >> 8);  hal_bridge::spi_write_byte_direct(x & 0xFF);
-    hal_bridge::spi_write_byte_direct(x2 >> 8); hal_bridge::spi_write_byte_direct(x2 & 0xFF);
-
-    // RASET
-    hal_bridge::spi_dc_control_direct(false); hal_bridge::spi_write_byte_direct(ST7789V_RASET);
-    hal_bridge::spi_dc_control_direct(true);
-    hal_bridge::spi_write_byte_direct(y >> 8);  hal_bridge::spi_write_byte_direct(y & 0xFF);
-    hal_bridge::spi_write_byte_direct(y2 >> 8); hal_bridge::spi_write_byte_direct(y2 & 0xFF);
-
-    // RAMWR
-    hal_bridge::spi_dc_control_direct(false); hal_bridge::spi_write_byte_direct(ST7789V_RAMWR);
-    hal_bridge::spi_wait_for_tx_complete_direct();
-    
-    hal_bridge::spi_cs_control_direct(false); 
-    
-    set_busy(false);
-}
-
-void TFT_SPI::setWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-    setDisplayAddress(x, y, w, h);
-}
-
-void TFT_SPI::clearScreen(uint16_t color) {
-    setDisplayAddress(0, 0, TFT_WIDTH, TFT_HEIGHT);
-    writeMultiple(color, (uint32_t)TFT_WIDTH * (uint32_t)TFT_HEIGHT);
-}
-
-// Заглушка, так как init вызывает commandList из tft_io
-void TFT_SPI::commandList(const uint16_t *list) {
-    // Реализуем побайтовую отправку с управлением CS.
-    if (get_busy()) return;
-    set_busy(true);
-    
-    // (Код парсера опущен, так как он есть в tft_io.cpp)
-    set_busy(false);
-}
 
 void TFT_SPI::writeSequence_DMA(uint16_t *data, uint32_t count) {
     writeSequence(data, count);

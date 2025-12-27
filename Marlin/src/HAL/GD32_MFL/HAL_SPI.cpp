@@ -32,7 +32,9 @@
 #define M_SPI_CKPH    (1U << 0U)
 #define M_SPI_CKPL    (1U << 1U)
 #define M_SPI_MSTMOD  (1U << 2U)
-#define M_SPI_PSC_8   (2U << 3U)
+#define M_SPI_PSC_2   (0U << 3U)  // Делитель 2 → 60 МГц
+#define M_SPI_PSC_4   (1U << 3U)  // Делитель 4 → 30 МГц
+#define M_SPI_PSC_8   (2U << 3U)  // Делитель 8 → 15 МГц
 #define M_SPI_SPIEN   (1U << 6U)
 #define M_SPI_SWNSS   (1U << 8U)
 #define M_SPI_SWNSSEN (1U << 9U)
@@ -52,12 +54,8 @@ bool spi_init_direct() {
     // 1. Clocks
     MFL_RCU_APB2EN |= (1U << 0U) | (1U << 2U) | (1U << 12U);
     
-    // !!! КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ ЗАВИСАНИЯ !!!
-    // Барьер синхронизации шины: читаем регистр обратно, чтобы убедиться,
-    // что клок SPI/GPIO был активирован перед тем, как мы начнем писать в CTL0.
-    // Это предотвращает зависание процессора на первой же записи в периферию.
-    (void)MFL_RCU_APB2EN; 
-    __asm__ __volatile__ ("nop"); 
+    // Барьер синхронизации памяти
+    __DSB(); 
     
     // 2. GPIO Config
     uint32_t temp_ctl0 = MFL_GPIOA_CTL0;
@@ -67,7 +65,8 @@ bool spi_init_direct() {
     temp_ctl0 |= (0x3U << 16) | (0xBU << 20) | (0x3U << 24) | (0xBU << 28);
     
     MFL_GPIOA_CTL0 = temp_ctl0;
-    MFL_GPIOA_BOP = (1U << 4) | (1U << 6); 
+    MFL_GPIOA_BOP = (1U << 4) | (1U << 6);
+    __DSB(); 
     
     // 3. SPI Config
     MFL_SPI0_CTL0 &= ~M_SPI_SPIEN; 
@@ -81,12 +80,11 @@ bool spi_init_direct() {
     spi_cfg |= M_SPI_MSTMOD;         
     spi_cfg |= M_SPI_SWNSS | M_SPI_SWNSSEN; 
     spi_cfg |= M_SPI_CKPL | M_SPI_CKPH;     
-    spi_cfg |= M_SPI_PSC_8;          
+    spi_cfg |= M_SPI_PSC_4;          
     spi_cfg |= M_SPI_BDEN | M_SPI_BDOEN;
     
     MFL_SPI0_CTL0 = spi_cfg;
-    
-    __asm("nop"); __asm("nop");
+    __DSB();
     
     MFL_SPI0_CTL0 |= M_SPI_SPIEN;
 

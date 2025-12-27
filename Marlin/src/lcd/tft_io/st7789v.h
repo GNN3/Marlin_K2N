@@ -19,6 +19,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  *
  */
+
+// file: Marlin/src/lcd/tft_io/st7789v.h
 #pragma once
 
 #include "tft_io.h"
@@ -164,7 +166,8 @@ static const uint16_t st7789v_init[] = {
   ESC_REG(ST7789V_PWCTRL1), 0x00A4, 0x00A1,
 
   ESC_REG(ST7789V_MADCTL), ST7789V_MADCTL_DATA,
-  ESC_REG(ST7789V_COLMOD), 0x0055,
+  ESC_REG(ST7789V_COLMOD), 0x0005,
+  ESC_REG(ST7789V_RAMCTRL), 0x0000, 0x00C8,
 
   ESC_REG(ST7789V_NORON),
   ESC_REG(ST7789V_DISPON),
