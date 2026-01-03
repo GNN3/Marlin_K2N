@@ -72,7 +72,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_LEVEL_BED_DONE                   = _UxGT("Выравнивание готово!");
   LSTR MSG_Z_FADE_HEIGHT                    = _UxGT("Лимит выранивания");
 
-  LSTR MSG_SET_HOME_OFFSETS                 = _UxGT("Установ.смещ.дома");
+  LSTR MSG_SET_HOME_OFFSETS                 = _UxGT("Уст. домашнее смещение");
 
   LSTR MSG_HOME_OFFSETS_APPLIED             = _UxGT("Смещения применены");
   LSTR MSG_SELECT_ORIGIN                    = _UxGT("Выберите ноль");
@@ -119,7 +119,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_EXTRUDE                          = _UxGT("Выдавить");
   LSTR MSG_RETRACT                          = _UxGT("Втянуть");
   LSTR MSG_MOVE_AXIS                        = _UxGT("Движение по осям");
-  LSTR MSG_PROBE_AND_LEVEL                  = _UxGT("Проба/выравнивание");
+  LSTR MSG_PROBE_AND_LEVEL                  = _UxGT("Z-проба/карта стола");
   LSTR MSG_BED_LEVELING                     = _UxGT("Выравнивание стола");
   LSTR MSG_LEVEL_BED                        = _UxGT("Выровнять стол");
   LSTR MSG_BED_TRAMMING                     = _UxGT("Выровнять углы");
@@ -301,7 +301,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_PID_TIMEOUT                      = _UxGT("Сбой калибровки! Таймаут.");
 
   LSTR MSG_SELECT_E                         = _UxGT("Выбор *");
-  LSTR MSG_ACC                              = _UxGT("Ускорение");
+  LSTR MSG_ACC                              = _UxGT("Ускор. XY печати");
   LSTR MSG_JERK                             = _UxGT("Рывок");
   LSTR MSG_VA_JERK                          = _UxGT("V") STR_A _UxGT("-рывок");
   LSTR MSG_VB_JERK                          = _UxGT("V") STR_B _UxGT("-рывок");
@@ -326,8 +326,8 @@ namespace LanguageNarrow_ru {
   LSTR MSG_AMAX_E                           = _UxGT("Ускор.макс E");
   LSTR MSG_AMAX_EN                          = _UxGT("Ускор.макс *");
   LSTR MSG_A_RETRACT                        = _UxGT("Ускор.втягив.");
-  LSTR MSG_A_TRAVEL                         = _UxGT("Ускор.путеш.");
-  LSTR MSG_XY_FREQUENCY_LIMIT               = _UxGT("Частота макс.");
+  LSTR MSG_A_TRAVEL                         = _UxGT("Холостых перем.");
+  LSTR MSG_XY_FREQUENCY_LIMIT               = _UxGT("Частота зигзага макс.");
   LSTR MSG_XY_FREQUENCY_FEEDRATE            = _UxGT("Подача мин.");
   LSTR MSG_STEPS_PER_MM                     = _UxGT("Шагов/мм");
   LSTR MSG_A_STEPS                          = STR_A _UxGT(" шаг/мм");
@@ -471,7 +471,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_ZPROBE_YOFFSET                   = _UxGT("Смещение Y");
   LSTR MSG_ZPROBE_ZOFFSET                   = _UxGT("Смещение Z");
   LSTR MSG_ZPROBE_OFFSET_N                  = _UxGT("Смещение @");
-  LSTR MSG_BABYSTEP_PROBE_Z                 = _UxGT("Шаг Z смещения");
+  LSTR MSG_BABYSTEP_PROBE_Z                 = _UxGT("Z смещение зонда");
   LSTR MSG_MOVE_NOZZLE_TO_BED               = _UxGT("Двиг. сопло к столу");
   LSTR MSG_BABYSTEP_X                       = _UxGT("Микрошаг X");
   LSTR MSG_BABYSTEP_Y                       = _UxGT("Микрошаг Y");
@@ -530,15 +530,15 @@ namespace LanguageNarrow_ru {
 
   LSTR MSG_INFO_PRINT_COUNT                 = _UxGT("Напечатано");
   LSTR MSG_INFO_PRINT_TIME                  = _UxGT("Общее время");
-  LSTR MSG_INFO_PRINT_LONGEST               = _UxGT("Наидольшее");
+  LSTR MSG_INFO_PRINT_LONGEST               = _UxGT("Макс. время печати");
   LSTR MSG_INFO_PRINT_FILAMENT              = _UxGT("Выдавлено");
   LSTR MSG_INFO_COMPLETED_PRINTS            = _UxGT("Завершено");
 
   LSTR MSG_INFO_MIN_TEMP                    = _UxGT("Мин.  ") LCD_STR_THERMOMETER;
   LSTR MSG_INFO_MAX_TEMP                    = _UxGT("Макс. ") LCD_STR_THERMOMETER;
   LSTR MSG_INFO_PSU                         = _UxGT("БП");
-  LSTR MSG_DRIVE_STRENGTH                   = _UxGT("Сила привода");
-  LSTR MSG_DAC_PERCENT_N                    = _UxGT("@ Привод, %");
+  LSTR MSG_DRIVE_STRENGTH                   = _UxGT("Ток драйвера");
+  LSTR MSG_DAC_PERCENT_N                    = _UxGT("@ привод, %");
   LSTR MSG_ERROR_TMC                        = _UxGT("СБОЙ СВЯЗИ С TMC");
   LSTR MSG_DAC_EEPROM_WRITE                 = _UxGT("Запись DAC в EEPROM");
   LSTR MSG_FILAMENT_CHANGE_HEADER           = _UxGT("ЗАМЕНА ФИЛАМЕНТА");

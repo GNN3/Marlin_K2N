@@ -29,6 +29,10 @@
 
 #include "../inc/MarlinConfig.h"
 
+#if ENABLED(HAS_MULTI_LANGUAGE)
+  #include "../lcd/marlinui.h"
+#endif
+
 #if ENABLED(FT_MOTION)
 
 #include "ft_motion.h"
