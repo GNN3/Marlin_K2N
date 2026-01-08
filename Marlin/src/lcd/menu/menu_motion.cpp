@@ -424,7 +424,7 @@ void menu_move() {
 
       if (ftMotion.rtg.isActive() && !ftMotion.rtg.isDone()) {
         STATIC_ITEM(MSG_FTM_RT_RUNNING);
-        ACTION_ITEM(MSG_FTM_RT_STOP, []{ ftMotion.rtg.abort(); ui.refresh(); });
+        ACTION_ITEM(MSG_FTM_RT_STOP, []{ queue.inject(F("M496")); ui.refresh(); });
       }
       else {
         GCODES_ITEM_N(X_AXIS, MSG_FTM_RT_START_N, F("M495 X S"));
@@ -550,7 +550,7 @@ void menu_move() {
 
       editable.state = c.axis_sync_enabled;
       EDIT_ITEM(bool, MSG_FTM_AXIS_SYNC, &editable.state, []{
-        queue.inject(TS(F("M493"), IAXIS_CHAR(MenuItemBase::itemIndex), 'T', int(editable.state)));
+        queue.inject(TS(F("M493"), IAXIS_CHAR(MenuItemBase::itemIndex), 'H', int(editable.state)));
       });
 
       #if ENABLED(FTM_RESONANCE_TEST)

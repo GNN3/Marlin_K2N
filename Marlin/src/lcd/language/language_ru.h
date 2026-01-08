@@ -35,11 +35,12 @@ namespace LanguageNarrow_ru {
   constexpr uint8_t CHARSIZE                = 2;
   LSTR LANGUAGE                             = _UxGT("Russian");
 
-  LSTR WELCOME_MSG                          = MACHINE_NAME_SUBST _UxGT(" Готов.");
+  LSTR WELCOME_MSG                          = MACHINE_NAME_SUBST _UxGT(" готов.");
   LSTR MSG_YES                              = _UxGT("Да");
   LSTR MSG_NO                               = _UxGT("Нет");
   LSTR MSG_BACK                             = _UxGT("Назад");
-
+  LSTR MSG_ERROR                            = _UxGT("Ошибка");
+  
   LSTR MSG_MEDIA_ABORTING                   = _UxGT("Прерывание...");
   LSTR MSG_MEDIA_INSERTED                   = _UxGT("SD карта вставлена");
   LSTR MSG_MEDIA_REMOVED                    = _UxGT("SD карта извлечена");
@@ -117,7 +118,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_SWITCH_PS_ON                     = _UxGT("Включить питание");
   LSTR MSG_SWITCH_PS_OFF                    = _UxGT("Выключить питание");
   LSTR MSG_EXTRUDE                          = _UxGT("Выдавить");
-  LSTR MSG_RETRACT                          = _UxGT("Втянуть");
+  LSTR MSG_RETRACT                          = _UxGT("FW ретракт");
   LSTR MSG_MOVE_AXIS                        = _UxGT("Движение по осям");
   LSTR MSG_PROBE_AND_LEVEL                  = _UxGT("Z-проба/карта стола");
   LSTR MSG_BED_LEVELING                     = _UxGT("Выравнивание стола");
@@ -163,10 +164,10 @@ namespace LanguageNarrow_ru {
   LSTR MSG_UBL_BC_INSERT2                   = _UxGT("Измерение");
   LSTR MSG_UBL_MOVING_TO_NEXT               = _UxGT("Двигаемся дальше");
   LSTR MSG_UBL_EDIT_CUSTOM_MESH             = _UxGT("Править свою сетку");
-  LSTR MSG_UBL_SET_TEMP_BED                 = LCD_STR_THERMOMETER _UxGT(" стола, ") LCD_STR_DEGREE _UxGT("C");
-  LSTR MSG_UBL_BED_TEMP_CUSTOM              = _UxGT("Своя ") LCD_STR_THERMOMETER _UxGT(" стола,") LCD_STR_DEGREE _UxGT("C");
-  LSTR MSG_UBL_SET_TEMP_HOTEND              = LCD_STR_THERMOMETER _UxGT(" сопла, ") LCD_STR_DEGREE _UxGT("C");
-  LSTR MSG_UBL_HOTEND_TEMP_CUSTOM           = _UxGT("Своя ") LCD_STR_THERMOMETER _UxGT(" сопла,") LCD_STR_DEGREE _UxGT("C");
+  LSTR MSG_UBL_SET_TEMP_BED                 = _UxGT("Темп. стола");
+  LSTR MSG_UBL_BED_TEMP_CUSTOM              = _UxGT("Темп. стола");
+  LSTR MSG_UBL_SET_TEMP_HOTEND              = _UxGT("Темп. сопла");
+  LSTR MSG_UBL_HOTEND_TEMP_CUSTOM           = _UxGT("Темп. сопла");
   LSTR MSG_UBL_BUILD_CUSTOM_MESH            = _UxGT("Построить свою");
   LSTR MSG_UBL_DONE_EDITING_MESH            = _UxGT("Правка завершена");
   LSTR MSG_UBL_FINE_TUNE_MESH               = _UxGT("Точная правка сетки");
@@ -262,12 +263,12 @@ namespace LanguageNarrow_ru {
   LSTR MSG_MOVE_N_DEG                       = _UxGT("Движение $") LCD_STR_DEGREE;
   LSTR MSG_SPEED                            = _UxGT("Скорость");
   LSTR MSG_MESH_Z_OFFSET                    = _UxGT("Z стола");
-  LSTR MSG_NOZZLE                           = _UxGT("Сопло, ") LCD_STR_DEGREE _UxGT("C");
+  LSTR MSG_NOZZLE                           = _UxGT("Сопло");
   LSTR MSG_NOZZLE_N                         = _UxGT("Сопло ~");
   LSTR MSG_NOZZLE_PARKED                    = _UxGT("Сопло запарковано");
   LSTR MSG_NOZZLE_STANDBY                   = _UxGT("Сопло ожидает");
-  LSTR MSG_BED                              = _UxGT("Стол,  ") LCD_STR_DEGREE _UxGT("C");
-  LSTR MSG_CHAMBER                          = _UxGT("Камера,") LCD_STR_DEGREE _UxGT("C");
+  LSTR MSG_BED                              = _UxGT("Стол");
+  LSTR MSG_CHAMBER                          = _UxGT("Камера");
   LSTR MSG_COOLER                           = _UxGT("Охлажд. лазера");
   LSTR MSG_COOLER_TOGGLE                    = _UxGT("Переключ. охл.");
   LSTR MSG_FLOWMETER_SAFETY                 = _UxGT("Безопас.потока");
@@ -295,6 +296,7 @@ namespace LanguageNarrow_ru {
 
   LSTR MSG_PID_AUTOTUNE                     = _UxGT("Автокалибровка PID");
   LSTR MSG_PID_AUTOTUNE_E                   = _UxGT("Автокалибр. PID *");
+  LSTR MSG_PID_AUTOTUNE_BED                 = _UxGT("Автокалибр. PID стола");
   LSTR MSG_PID_AUTOTUNE_DONE                = _UxGT("Калибр.PID выполнена");
   LSTR MSG_PID_BAD_HEATER_ID                = _UxGT("Сбой калибровки! Неверный экструдер.");
   LSTR MSG_PID_TEMP_TOO_HIGH                = _UxGT("Сбой калибровки! Температура завышена.");
@@ -308,7 +310,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_VC_JERK                          = _UxGT("V") STR_C _UxGT("-рывок");
   LSTR MSG_VN_JERK                          = _UxGT("V@-рывок");
   LSTR MSG_VE_JERK                          = _UxGT("Ve-рывок");
-  LSTR MSG_JUNCTION_DEVIATION               = _UxGT("Отклон.угла");
+  LSTR MSG_JUNCTION_DEVIATION               = _UxGT("Рывок JD, мм");
   LSTR MSG_MAX_SPEED                        = _UxGT("Скорость, мм/с");
   LSTR MSG_VMAX_A                           = _UxGT("Скор.макс ") STR_A;
   LSTR MSG_VMAX_B                           = _UxGT("Скор.макс ") STR_B;
@@ -519,7 +521,7 @@ namespace LanguageNarrow_ru {
   LSTR MSG_INFO_BOARD_MENU                  = _UxGT("Данные платы");
   LSTR MSG_INFO_THERMISTOR_MENU             = _UxGT("Термисторы");
   LSTR MSG_INFO_EXTRUDERS                   = _UxGT("Экструдеры");
-  LSTR MSG_INFO_BAUDRATE                    = _UxGT("Скорость,БОД");
+  LSTR MSG_INFO_BAUDRATE                    = _UxGT("Скорость, БОД");
   LSTR MSG_INFO_PROTOCOL                    = _UxGT("Протокол");
   LSTR MSG_INFO_RUNAWAY_OFF                 = _UxGT("Контр.утечки Т:Выкл");
   LSTR MSG_INFO_RUNAWAY_ON                  = _UxGT("Контр.утечки Т:Вкл");

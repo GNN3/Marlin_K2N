@@ -449,7 +449,7 @@ void menu_backlash();
         _PID_EDIT_ITEMS_TMPL(H_BED, thermalManager.temp_bed);
       #endif
       #if ENABLED(PID_AUTOTUNE_MENU)
-        EDIT_ITEM_FAST_N(int3, H_BED, MSG_PID_AUTOTUNE_E, &autotune_temp_bed, PREHEAT_1_TEMP_BED, BED_MAX_TARGET, []{ _lcd_autotune(H_BED); });
+        EDIT_ITEM_FAST_N(int3, H_BED, MSG_PID_AUTOTUNE_BED, &autotune_temp_bed, PREHEAT_1_TEMP_BED, BED_MAX_TARGET, []{ _lcd_autotune(H_BED); });
       #endif
     #endif
 
