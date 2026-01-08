@@ -82,7 +82,6 @@
 
 #define TFT_BUFFER_WORDS        9600
 #define DMA_MAX_WORDS           0xFFFF
-//#define TFT_COLOR TFT_COLOR_BGR
 
 // Pin numbers
 #define DIGITAL_PIN_COUNT   51

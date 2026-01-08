@@ -105,7 +105,7 @@
 #define FIL_RUNOUT_PIN                      PC15
 #define POWER_LOSS_PIN                      PC2
 #define POWER_MONITOR_VOLTAGE_PIN           PC2
-#define AUTO_LEVEL_RX_PIN                   PB8
+
 //
 // SD Card
 //
