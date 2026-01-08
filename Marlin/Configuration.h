@@ -1387,10 +1387,10 @@
  */
 //#define CLASSIC_JERK
 #if ENABLED(CLASSIC_JERK)
-  #define DEFAULT_XJERK 10.0
-  #define DEFAULT_YJERK 10.0
-  #define DEFAULT_ZJERK  0.3
-  #define DEFAULT_EJERK  5.0
+  #define DEFAULT_XJERK 15.0
+  #define DEFAULT_YJERK 15.0
+  #define DEFAULT_ZJERK  5
+  #define DEFAULT_EJERK 15.0
   //#define DEFAULT_IJERK  0.3
   //#define DEFAULT_JJERK  0.3
   //#define DEFAULT_KJERK  0.3
@@ -1400,9 +1400,9 @@
 
   //#define TRAVEL_EXTRA_XYJERK 0.0     // Additional jerk allowance for all travel moves
 
-  //#define LIMITED_JERK_EDITING        // Limit edit via M205 or LCD to DEFAULT_aJERK * 2
+  #define LIMITED_JERK_EDITING        // Limit edit via M205 or LCD to DEFAULT_aJERK * 2
   #if ENABLED(LIMITED_JERK_EDITING)
-    #define MAX_JERK_EDIT_VALUES { 20, 20, 0.6, 10 } // ...or, set your own edit limits
+    #define MAX_JERK_EDIT_VALUES { 20, 20, 8, 10 } // ...or, set your own edit limits
   #endif
 #endif
 
@@ -1790,7 +1790,7 @@
 #define Z_PROBE_ERROR_TOLERANCE    10 // (mm) Tolerance for early trigger (<= -probe.offset.z + ZPET)
 #define Z_AFTER_PROBING             5 // (mm) Z position after probing is done
 
-#define Z_PROBE_LOW_POINT          -8 // (mm) Farthest distance below the trigger-point to go before stopping
+#define Z_PROBE_LOW_POINT          -2 // (mm) Farthest distance below the trigger-point to go before stopping
 
 // For M851 provide ranges for adjusting the X, Y, and Z probe offsets
 //#define PROBE_OFFSET_XMIN -50   // (mm)
@@ -1821,7 +1821,7 @@
   //#define WAIT_FOR_BED_HEATER     // Wait for bed to heat back up between probes (to improve accuracy)
   //#define WAIT_FOR_HOTEND         // Wait for hotend to heat back up between probes (to improve accuracy & prevent cold extrude)
 #endif
-//#define PROBING_FANS_OFF          // Turn fans off when probing
+#define PROBING_FANS_OFF          // Turn fans off when probing
 //#define PROBING_ESTEPPERS_OFF     // Turn all extruder steppers off when probing
 //#define PROBING_STEPPERS_OFF      // Turn all steppers off (unless needed to hold position) when probing (including extruders)
 //#define DELAY_BEFORE_PROBING 200  // (ms) To prevent vibrations from triggering piezo sensors
@@ -2066,12 +2066,12 @@
   // Commands to execute on filament runout.
   // With multiple runout sensors use the %c placeholder for the current tool in commands (e.g., "M600 T%c")
   // NOTE: After 'M412 H1' the host handles filament runout and this script does not apply.
-  //#define FILAMENT_RUNOUT_SCRIPT "M600"
+  #define FILAMENT_RUNOUT_SCRIPT "M600"
 
   // After a runout is detected, continue printing this length of filament
   // before executing the runout script. Useful for a sensor at the end of
   // a feed tube. Requires 4 bytes SRAM per sensor, plus 4 bytes overhead.
-  //#define FILAMENT_RUNOUT_DISTANCE_MM 25
+  #define FILAMENT_RUNOUT_DISTANCE_MM 380
 
   #ifdef FILAMENT_RUNOUT_DISTANCE_MM
     // Enable this option to use an encoder disc that toggles the runout pin
@@ -2173,13 +2173,13 @@
  * Commands to execute at the start of G29 probing,
  * after switching to the PROBING_TOOL.
  */
-#define EVENT_GCODE_BEFORE_G29 "M107"
+#define EVENT_GCODE_BEFORE_G29 "M106 P0 S100"
 
 /**
  * Commands to execute at the end of G29 probing.
  * Useful to retract or move the Z probe out of the way.
  */
-#define EVENT_GCODE_AFTER_G29 "M140 S0\nM104 S0\nG28 X Y\nM84"
+#define EVENT_GCODE_AFTER_G29 "M140 S0\nM104 S0\nG28 X Y\nM84\nM107"
 
 /**
  * Normally G28 leaves leveling disabled on completion. Enable one of
@@ -2194,7 +2194,7 @@
  */
 #define PREHEAT_BEFORE_LEVELING
 #if ENABLED(PREHEAT_BEFORE_LEVELING)
-  #define LEVELING_NOZZLE_TEMP 220   // (°C) Only applies to E0 at this time
+  #define LEVELING_NOZZLE_TEMP 190   // (°C) Only applies to E0 at this time
   #define LEVELING_BED_TEMP     60
 #endif
 
@@ -2522,7 +2522,7 @@
 //
 // M149 Set temperature units support
 //
-#define TEMPERATURE_UNITS_SUPPORT
+//#define TEMPERATURE_UNITS_SUPPORT
 
 // @section temperature
 
