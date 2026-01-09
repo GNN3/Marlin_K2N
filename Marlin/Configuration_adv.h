@@ -1162,8 +1162,9 @@
   #define FT_MOTION_MENU                      // Provide a MarlinUI menu to set M493 and M494 parameters
 
   #define NO_STANDARD_MOTION                  // Disable the standard motion system entirely to save Flash and RAM
-  #if ENABLED(NO_STANDARD_MOTION)
-    #define FTM_HOME_AND_PROBE                // Use FT Motion for homing / probing. Disable if FT Motion breaks these functions.
+  #if DISABLED(NO_STANDARD_MOTION)
+    //#define FTM_HOME_AND_PROBE              // Use FT Motion for homing / probing. Disable if FT Motion breaks these functions.
+                                              // If NO_STANDARD_MOTION is enabled, FTM_HOME_AND_PROBE is enabled automatically.
   #endif
 
   #define FTM_DYNAMIC_FREQ                    // Enable for linear adjustment of XY shaping frequency according to Z or E
