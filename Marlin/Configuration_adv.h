@@ -1236,7 +1236,7 @@
    */
   #define FTM_BUFFER_SIZE             512   // Window size for trajectory generation, must be a power of 2 (e.g 64, 128, 256, ...)
                                             // The total buffered time in seconds is (FTM_BUFFER_SIZE/FTM_FS)
-  #define FTM_FS                     1000   // (Hz) Frequency for trajectory generation.
+  #define FTM_FS                     1500   // (Hz) Frequency for trajectory generation.
   #define FTM_MIN_SHAPE_FREQ           20   // (Hz) Minimum shaping frequency, lower consumes more RAM
 
 #endif // FT_MOTION
@@ -4277,7 +4277,7 @@
  * Host Prompt Support enables Marlin to use the host for user prompts so
  * filament runout and other processes can be managed from the host side.
  */
-#define HOST_ACTION_COMMANDS
+//#define HOST_ACTION_COMMANDS
 #if ENABLED(HOST_ACTION_COMMANDS)
   //#define HOST_PAUSE_M76                // Tell the host to pause in response to M76
   #define HOST_PROMPT_SUPPORT           // Initiate host prompts to get user feedback

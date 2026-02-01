@@ -43,7 +43,7 @@ typedef uint32_t hal_timer_t;
 #endif
 
 // Timer configuration constants
-#define STEPPER_TIMER_RATE    2000000
+#define STEPPER_TIMER_RATE    60000000
 #define TEMP_TIMER_FREQUENCY  1000
 
 // Timer prescaler calculations
