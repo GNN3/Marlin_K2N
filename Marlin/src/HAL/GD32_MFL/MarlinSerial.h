@@ -28,6 +28,7 @@
 #endif
 
 #include <UsartSerial.hpp>
+
 #include "../../core/serial_hook.h"
 
 #define SERIAL_INDEX_MIN 0
@@ -42,27 +43,34 @@
 using namespace arduino;
 
 struct MarlinSerial : public UsartSerial {
-  // Статический метод получения инстанса (каст безопасен только если нет новых полей данных)
+  // Фабрика (статический метод создания/получения инстанса)
   static auto get_instance(usart::USART_Base Base, pin_size_t rxPin = NO_PIN, pin_size_t txPin = NO_PIN) -> MarlinSerial&;
 
+  // Инициализация
   void begin(unsigned long baudrate, uint16_t config);
   inline void begin(unsigned long baudrate) { begin(baudrate, SERIAL_8N1); }
 
-  // ПЕРЕОПРЕДЕЛЕНИЕ: Ключевой момент для работы парсера без поломки приема
-  int read() override; 
-  
-  // Оставляем только проброс вызова, без вычитывания данных
-  void updateRxDmaBuffer();
+  // Перехватчик для режима DMA (Spy Mode)
+  // Обязательно override, так как это виртуальный метод базового класса
+  void updateRxDmaBuffer() override;
 
+  // Метод обработки прерывания для режима IRQ (No DMA)
+  // Должен быть public, чтобы статические функции-трамплины в .cpp могли его вызвать
+  #if !ENABLED(SERIAL_DMA)
+    void emergency_isr();
+  #endif
+
+  // Заглушка, требуемая ядром Marlin (если DMA выключен)
   #if DISABLED(SERIAL_DMA)
     FORCE_INLINE static uint8_t buffer_overruns() { return 0; }
   #endif
 
-  // ВНИМАНИЕ: Убраны поля данных (emergency_state), чтобы не коррумпировать память при cast
 protected:
+  // Наследуем конструкторы UsartSerial
   using UsartSerial::UsartSerial;
 };
 
+// Объявления глобальных объектов (чтобы линковщик их видел)
 typedef Serial1Class<MarlinSerial> MSerialT;
 extern MSerialT MSerial0;
 extern MSerialT MSerial1;
