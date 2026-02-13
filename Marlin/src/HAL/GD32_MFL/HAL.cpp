@@ -59,6 +59,10 @@ void MarlinHAL::init() {
   constexpr unsigned int cpuFreq = F_CPU;
   UNUSED(cpuFreq);
 
+  #if (__FPU_PRESENT == 1) && (__FPU_USED == 1)
+    __set_FPSCR(__get_FPSCR() | (1 << 24));
+  #endif
+  
   #if PIN_EXISTS(LED)
     OUT_WRITE(LED_PIN, LOW);
   #endif
