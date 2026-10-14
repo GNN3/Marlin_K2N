@@ -10,6 +10,8 @@
 
 class TFT_SPI {
     static bool tft_busy;
+    static uint16_t fill_color;   // Static source for writeMultiple_DMA (16-bit, no increment)
+    static uint16_t data_width;   // Текущий формат транзакции: DATASIZE_8BIT / DATASIZE_16BIT
 
 public:
     // Инициализация и состояние
@@ -37,7 +39,6 @@ public:
     static void writeReg(uint16_t reg);
     
     // writeData: uint16_t, чтобы принимать цвета и координаты (MSB->LSB)
-    // и чтобы компилятор не ругался на переполнение при 0xFFFF
     static void writeData(uint16_t data);
     
     // Парсер скриптов инициализации
@@ -47,7 +48,7 @@ public:
     static void writeSequence(const uint16_t *data, uint32_t count);
     static void writeMultiple(uint16_t color, uint32_t count);
     
-    // DMA-совместимые обертки (в нашей реализации вызывают обычные методы)
+    // DMA-методы
     static void writeSequence_DMA(uint16_t *data, uint32_t count);
     static void writeMultiple_DMA(uint16_t color, uint32_t count);
 };
