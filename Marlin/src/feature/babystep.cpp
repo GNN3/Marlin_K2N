@@ -49,7 +49,9 @@ void Babystep::step_axis(const AxisEnum axis) {
   const int16_t curTodo = steps[BS_AXIS_IND(axis)]; // get rid of volatile for performance
   if (curTodo) {
     stepper.do_babystep(axis, curTodo > 0);
-    if (curTodo > 0) steps[BS_AXIS_IND(axis)]--; else steps[BS_AXIS_IND(axis)]++;
+    // Явная запись вместо volatile++/-- (deprecated в C++20, GCC 14+).
+    // Также избегает повторного чтения volatile-памяти.
+    steps[BS_AXIS_IND(axis)] = int16_t(curTodo + (curTodo > 0 ? -1 : 1));
   }
 }
 

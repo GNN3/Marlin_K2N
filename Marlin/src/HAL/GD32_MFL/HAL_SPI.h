@@ -48,6 +48,7 @@ namespace hal_bridge {
     bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment);
     void spi_dma_trigger();
     void spi_dma_stop();
+    void spi_dma_halt_only();   // Минимальная остановка без смены формата кадра
     bool spi_dma_is_busy();
 
     // --- Wrappers ---

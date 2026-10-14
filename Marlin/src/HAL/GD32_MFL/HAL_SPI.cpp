@@ -202,37 +202,51 @@ void spi_dc_control_direct(bool data) {
 // ==========================================================
 
 void spi_write_byte_direct(uint8_t data) {
-    while (!(MFL_SPI0_STAT & M_SPI_TBE));
+    uint32_t guard = 0;
+    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+        if (++guard > 1000000UL) return;   // защита от зависания
     MFL_SPI0_DATA = data;
 }
 
 void spi_write_word_direct(uint16_t data) {
     // 1. MSB
-    while (!(MFL_SPI0_STAT & M_SPI_TBE));
+    uint32_t guard = 0;
+    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+        if (++guard > 1000000UL) return;
     MFL_SPI0_DATA = (uint8_t)(data >> 8);
-    
+
     // 2. LSB
-    while (!(MFL_SPI0_STAT & M_SPI_TBE));
+    guard = 0;
+    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+        if (++guard > 1000000UL) return;
     MFL_SPI0_DATA = (uint8_t)(data & 0xFF);
 }
 
 // Одиночный 16-битный кадр (требуется FF16=1, т.е. режим DATASIZE_16BIT).
 // SPI отдаёт старшие биты вперёд.
 void spi_write_frame16_direct(uint16_t data) {
-    while (!(MFL_SPI0_STAT & M_SPI_TBE));
+    uint32_t guard = 0;
+    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+        if (++guard > 1000000UL) return;
     MFL_SPI0_DATA = (uint32_t)data;
 }
 
 void spi_write_buf_direct(const uint8_t* buf, size_t len) {
     while (len--) {
-        while (!(MFL_SPI0_STAT & M_SPI_TBE));
+        uint32_t guard = 0;
+        while (!(MFL_SPI0_STAT & M_SPI_TBE))
+            if (++guard > 1000000UL) return;
         MFL_SPI0_DATA = *buf++;
     }
 }
 
 void spi_wait_for_tx_complete_direct() {
-    while (!(MFL_SPI0_STAT & M_SPI_TBE));
-    while (MFL_SPI0_STAT & M_SPI_TRANS);
+    uint32_t guard = 0;
+    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+        if (++guard > 1000000UL) return;
+    guard = 0;
+    while (MFL_SPI0_STAT & M_SPI_TRANS)
+        if (++guard > 1000000UL) return;
 }
 
 // ==========================================================
@@ -293,6 +307,12 @@ static bool spi_wait_tx_idle() {
     return true;
 }
 
+// Быстрая проверка: SPI гарантированно свободен (TBE=1, TRANS=0).
+// Используется после spi_dma_is_busy()==false, когда TRANS уже проверен.
+static inline bool spi_is_idle_fast() {
+    return (MFL_SPI0_STAT & (M_SPI_TBE | M_SPI_TRANS)) == M_SPI_TBE;
+}
+
 // Сброс буферов SPI (чтение STAT + DATA) — errata GD32
 static void spi_flush_buffers() {
     volatile uint32_t dummy = MFL_SPI0_STAT;
@@ -305,6 +325,23 @@ static void dma_channel_halt() {
     MFL_SPI0_CTL1 &= ~M_SPI_DMATEN;      // SPI больше не просит данные
     MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;     // глушим канал
     MFL_DMA0_INTC = M_DMA_CH2_ALL;       // сброс GIF/FTFIF/HTFIF/ERRIF
+    __DSB();
+}
+
+// Минимальная остановка: глушим DMA-канал и DMATEN, НЕ трогаем формат кадра.
+// Вызывается когда spi_dma_is_busy() уже подтвердил TRANS=0 (SPI свободен).
+// Экономит spi_wait_tbe + spi_wait_tx_idle + spi_restore_8bit (~50-80 циклов).
+void spi_dma_halt_only() {
+    // Safety net: если по какой-то причине SPI ещё не idle (аппаратный сбой),
+    // дождёмся флагов. В нормальном пути spi_dma_is_busy() уже проверил TRANS=0,
+    // поэтому spi_is_idle_fast() вернёт true за 1 цикл.
+    if (!spi_is_idle_fast()) {
+        spi_wait_tbe();
+        spi_wait_tx_idle();
+    }
+    MFL_SPI0_CTL1 &= ~M_SPI_DMATEN;
+    MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;
+    MFL_DMA0_INTC = M_DMA_CH2_ALL;
     __DSB();
 }
 
@@ -329,14 +366,15 @@ bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment
     // младшие биты отбрасываются, и данные тихо «сдвигаются»)
     if (mem_addr & 1U) return false;
 
-    // 0. Тактирование DMA0 (AHB!)
-    MFL_RCU_AHBEN |= M_RCU_DMA0EN;
-    __DSB();
+    // 1. Останавливаем канал ТОЛЬКО если он активен (экономия ~10 циклов
+    //    при последовательных DMA-транзакциях, когда канал уже погашен).
+    if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) {
+        dma_channel_halt();
+    }
 
-    // 1. На время перенастройки канал и DMA-запросы SPI должны быть сняты
-    dma_channel_halt();
-
-    // 2. SPI disabling sequence: дождаться TBE=1, затем TRANS=0
+    // 2. SPI disabling sequence: дождаться TBE=1, затем TRANS=0.
+    //    При последовательных DMA (isBusy уже подтвердил idle) эти проверки
+    //    проходят за 1-2 цикла (флаги уже установлены).
     if (!spi_wait_tbe()) return false;
     if (!spi_wait_tx_idle()) return false;
 
@@ -351,12 +389,16 @@ bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment
     MFL_DMA0_INTC = M_DMA_CH2_ALL;
     __DSB();
 
-    // 4. Errata: FF16 меняется только при выключенном SPI, буферы сбрасываются
-    MFL_SPI0_CTL0 &= ~M_SPI_SPIEN;
-    __DSB();
-    MFL_SPI0_CTL0 |=  M_SPI_FF16;     // 16-битный кадр
-    MFL_SPI0_CTL0 &= ~M_SPI_LF;       // LF=0 -> MSB first, как требует ST7789
-    spi_flush_buffers();
+    // 4. Errata: FF16 меняется только при выключенном SPI, буферы сбрасываются.
+    //    Если SPI УЖЕ в 16-битном режиме (последовательные DMA-транзакции) —
+    //    пропускаем полный цикл SPI off→on, экономя ~40-60 циклов на строку.
+    if (!(MFL_SPI0_CTL0 & M_SPI_FF16)) {
+        MFL_SPI0_CTL0 &= ~M_SPI_SPIEN;
+        __DSB();
+        MFL_SPI0_CTL0 |=  M_SPI_FF16;     // 16-битный кадр
+        MFL_SPI0_CTL0 &= ~M_SPI_LF;       // LF=0 -> MSB first, как требует ST7789
+        spi_flush_buffers();
+    }
 
     // 5. Конфигурирование канала (CHEN всё ещё 0)
     MFL_DMA0_CH2_PADDR = (uint32_t)(MFL_SPI0_BASE + 0x0CU);  // SPI0 DATA

@@ -24,10 +24,12 @@ bool TFT_SPI::isBusy() {
     if (!tft_busy) return false;
     if (hal_bridge::spi_dma_is_busy()) return true;
 
-    // Транзакция завершена. Обязательно глушим DMA-запрос SPI и возвращаем
-    // 8-битный формат кадра: иначе следующая команда (CASET/RASET/RAMWR)
-    // уйдёт как 16-битный кадр, дисплей её не поймёт и на экране будет шум.
-    hal_bridge::spi_dma_stop();
+    // Транзакция завершена (spi_dma_is_busy подтвердил TRANS=0).
+    // Глушим DMA-канал БЕЗ возврата в 8-битный формат — это сделает
+    // spi_set_frame_format_direct(false) в dataTransferBegin/writeSequence,
+    // когда формат действительно нужен. При последовательных DMA-строках
+    // SPI остаётся в 16-битном режиме и prepare() пропускает переключение.
+    hal_bridge::spi_dma_halt_only();
     hal_bridge::spi_cs_control_direct(false);   // CS High
     data_width = DATASIZE_8BIT;
     set_busy(false);
