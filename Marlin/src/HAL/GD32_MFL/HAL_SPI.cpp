@@ -1,4 +1,7 @@
-//File hal-bridge HAL_SPI.cpp
+// hal-bridge HAL_SPI.cpp — GD32_MFL
+// SPI0 и DMA0(CH2) реализованы через SDK-классы MFL (spi::SPI, dma::DMA, gpio::GPIO)
+// вместо прямого обращения к регистрам. Публичный API hal_bridge и поведение
+// (state-machine, watchdog, errata, двухфазный DMA) сохранены полностью.
 #include "../platforms.h"
 #ifdef ARDUINO_ARCH_MFL
 
@@ -6,118 +9,59 @@
 #include "../../inc/MarlinConfig.h"
 #include "Arduino.h"
 
-// ==========================================================
-// === ПРЯМЫЕ АДРЕСА РЕГИСТРОВ (Hardcoded) ===
-// ==========================================================
+#include <SPI.hpp>     // spi::SPI
+#include <DMA.hpp>     // dma::DMA
+#include <GPIO.hpp>    // gpio::GPIO + fast_write_pin
+#include <variant.h>   // port_pin_map, PortPinPair
 
-// RCU
-#define MFL_RCU_BASE        0x40021000U
-#define MFL_RCU_APB2EN      (*(volatile uint32_t *)(MFL_RCU_BASE + 0x18U))
-
-// GPIO A
-#define MFL_GPIOA_BASE      0x40010800U
-#define MFL_GPIOA_CTL0      (*(volatile uint32_t *)(MFL_GPIOA_BASE + 0x00U))
-#define MFL_GPIOA_BOP       (*(volatile uint32_t *)(MFL_GPIOA_BASE + 0x10U))
-#define MFL_GPIOA_BC        (*(volatile uint32_t *)(MFL_GPIOA_BASE + 0x14U))
-
-// SPI0
-#define MFL_SPI0_BASE       0x40013000U
-#define MFL_SPI0_CTL0       (*(volatile uint32_t *)(MFL_SPI0_BASE + 0x00U))
-#define MFL_SPI0_STAT       (*(volatile uint32_t *)(MFL_SPI0_BASE + 0x08U))
-#define MFL_SPI0_DATA       (*(volatile uint32_t *)(MFL_SPI0_BASE + 0x0CU))
-
-// ------------------------------------------------------------
-// RCU: тактирование DMA0 находится в AHB-регистре, а НЕ в APB1!
-// gd32f30x_rcu.h: RCU_AHBEN = base+0x14, RCU_AHBEN_DMA0EN = BIT(0)
-// ------------------------------------------------------------
-#define MFL_RCU_AHBEN       (*(volatile uint32_t *)(MFL_RCU_BASE + 0x14U))
-#define M_RCU_DMA0EN        (1U << 0)
-
-// ------------------------------------------------------------
-// DMA0 (base 0x40020000). По даташиту GD32F303: SPI0_TX -> DMA0 Channel 2.
-// Смещения каналов: CHxCTL = 0x08 + 0x14*x  ->  CH2CTL=0x30, CH2CNT=0x34,
-// CH2PADDR=0x38, CH2MADDR=0x3C (совпадает с gd32f30x_dma.h).
-// ------------------------------------------------------------
-#define MFL_DMA0_BASE       0x40020000U
-#define MFL_DMA0_INTF       (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x00U))
-#define MFL_DMA0_INTC       (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x04U))
-#define MFL_DMA0_CH2_CTL    (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x30U))
-#define MFL_DMA0_CH2_CNT    (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x34U))
-#define MFL_DMA0_CH2_PADDR  (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x38U))
-#define MFL_DMA0_CH2_MADDR  (*(volatile uint32_t *)(MFL_DMA0_BASE + 0x3CU))
-
-// Флаги канала: на каждый канал приходится 4 бита (GIF, FTFIF, HTFIF, ERRIF),
-// поэтому для канала 2 это биты 8..11 регистра DMA_INTF / DMA_INTC.
-#define M_DMA_GIF2          (1U << 8)
-#define M_DMA_FTFIF2        (1U << 9)
-#define M_DMA_HTFIF2        (1U << 10)
-#define M_DMA_ERRIF2        (1U << 11)
-#define M_DMA_CH2_ALL       (M_DMA_GIF2 | M_DMA_FTFIF2 | M_DMA_HTFIF2 | M_DMA_ERRIF2)
-
-// Биты DMA_CHxCTL (gd32f30x_dma.h)
-#define M_DMA_CHEN          (1U << 0)
-#define M_DMA_FTFIE         (1U << 1)
-#define M_DMA_HTFIE         (1U << 2)
-#define M_DMA_ERRIE         (1U << 3)
-#define M_DMA_DIR_M2P       (1U << 4)   // 1 = memory -> peripheral
-#define M_DMA_CMEN          (1U << 5)   // circular mode (здесь не используется)
-#define M_DMA_PNAGA         (1U << 6)   // 0 = адрес периферии постоянен (SPI_DATA)
-#define M_DMA_MNAGA         (1U << 7)   // инкремент адреса памяти
-#define M_DMA_PWIDTH_16     (1U << 8)   // PWIDTH = 01 -> 16-bit
-#define M_DMA_MWIDTH_16     (1U << 10)  // MWIDTH = 01 -> 16-bit
-#define M_DMA_PRIO_HIGH     (2U << 12)
-#define M_DMA_M2M           (1U << 14)  // memory-to-memory (не используется, = 0)
-
-// CNT[15:0] — 16-битный счётчик; ноль означает «транзакций нет».
-#define M_DMA_CNT_MAX       0xFFFFU
+// Делитель тактирования SPI0. При APB2 = 120 МГц: PCLK_4 = 30 МГц, PCLK_8 = 15 МГц.
+#ifndef TFT_SPI_PCLK_DIVIDER
+  #define TFT_SPI_PCLK_DIVIDER spi::PCLK_Divider::PCLK_4
+#endif
 
 // Watchdog: счётчик не двигается дольше этого времени -> запросов от SPI нет.
 #define DMA_STALL_TIMEOUT_US      5000UL
 #define DMA_TRANSFER_TIMEOUT_US   200000UL
 #define DMA_SPI_FLAG_TIMEOUT_US   100000UL
 
-// ==========================================================
-// === МАСКИ ===
-// ==========================================================
-#define M_SPI_CKPH    (1U << 0U)
-#define M_SPI_CKPL    (1U << 1U)
-#define M_SPI_MSTMOD  (1U << 2U)
-#define M_SPI_PSC_2   (0U << 3U)  // Делитель 2  → APB2/2
-#define M_SPI_PSC_4   (1U << 3U)  // Делитель 4  → APB2/4
-#define M_SPI_PSC_8   (2U << 3U)  // Делитель 8  → APB2/8
-#define M_SPI_PSC_16  (3U << 3U)  // Делитель 16 → APB2/16
-
-// Делитель тактирования SPI0 по умолчанию.
-// При APB2 = 120 МГц: PSC_8 = 15 МГц, PSC_4 = 30 МГц.
-#ifndef TFT_SPI_PSC
-  #define TFT_SPI_PSC M_SPI_PSC_4
-#endif
-#define M_SPI_SPIEN   (1U << 6U)
-#define M_SPI_LF      (1U << 7U)   // 1 = LSB first; держим 0 (MSB first — ST7789)
-#define M_SPI_SWNSS   (1U << 8U)
-#define M_SPI_SWNSSEN (1U << 9U)
-#define M_SPI_FF16    (1U << 11U)  // 16-битный формат кадра в CTL0
-#define M_SPI_TBE     (1U << 1U)
-#define M_SPI_TRANS   (1U << 7U)
-
-// SPI0 CTL1 (DMA enable)
-#define MFL_SPI0_CTL1 (*(volatile uint32_t *)(MFL_SPI0_BASE + 0x04U))
-#define M_SPI_DMAREN  (1U << 0U)   // RX DMA request
-#define M_SPI_DMATEN  (1U << 1U)   // TX DMA request
-
-// Bidirectional Mode
-#define M_SPI_BDOEN   (1U << 14U) 
-#define M_SPI_BDEN    (1U << 15U) 
+// CNT[15:0] — 16-битный счётчик; ноль означает «транзакций нет».
+#define M_DMA_CNT_MAX       0xFFFFU
 
 namespace hal_bridge {
 
 // ==========================================================
+// === ЛЕНИВЫЕ ОДНОЗНАЧНЫЕ ПЕРИФИЕРИЙ (SDK MFL) ===
+// ==========================================================
+// Конструкторы spi::SPI / dma::DMA / gpio::GPIO сами включают тактирование
+// через RCU, поэтому ручные записи в RCU_APB2EN / RCU_AHBEN больше не нужны.
+static spi::SPI& SPIx() {
+    static spi::SPI& s = spi::SPI::get_instance(spi::SPI_Base::SPI0_BASE).value();
+    return s;
+}
+static dma::DMA& DMAx() {
+    // GD32F303: запрос SPI0_TX аппаратно подключён к DMA0 Channel 2.
+    static dma::DMA& d = dma::DMA::get_instance(dma::DMA_Base::DMA0_BASE,
+                                                dma::DMA_Channel::CHANNEL2).value();
+    return d;
+}
+
+// Биты для быстрой проверки состояния (значения взяты из enum-ов SDK).
+static inline volatile uint32_t* dma_chxctl() { return DMAx().reg_address(dma::DMA_Regs::CH2CTL); }
+static const uint32_t DMA_CHEN_BIT = 1U << static_cast<uint32_t>(dma::CHXCTL_Bits::CHEN);
+static const uint32_t SPI_FF16_BIT = 1U << static_cast<uint32_t>(spi::CTL0_Bits::FF16);
+
+// Forward declarations (внутренние помощники определены ниже).
+static void spi_flush_buffers();
+static void dma_channel_halt();
+static bool spi_wait_tbe();
+static bool spi_wait_tx_idle();
+static inline bool spi_is_idle_fast();
+static void spi_restore_8bit();
+
+// ==========================================================
 // === STATE MACHINE (guard layer) ===
 // ==========================================================
-// Software shadow of the protocol state. NOT a replacement for hardware reads.
-// Used by TFT_SPI to validate transitions and catch programming errors.
 static SpiState spi_state = SpiState::Idle;
-
 SpiState spi_get_state() { return spi_state; }
 void spi_set_state(SpiState s) { spi_state = s; }
 
@@ -125,154 +69,111 @@ void spi_set_state(SpiState s) { spi_state = s; }
 // === ИНИЦИАЛИЗАЦИЯ ===
 // ==========================================================
 bool spi_init_direct() {
-    // 1. Clocks: APB2 -> AF(bit0) + GPIOA(bit2) + SPI0(bit12)
-    MFL_RCU_APB2EN |= (1U << 0U) | (1U << 2U) | (1U << 12U);
+    const PortPinPair cs   = port_pin_map[TFT_CS_PIN];
+    const PortPinPair dc   = port_pin_map[TFT_DC_PIN];
+    const PortPinPair sck  = port_pin_map[TFT_SCK_PIN];
+    const PortPinPair mosi = port_pin_map[TFT_MOSI_PIN];
 
-    // Тактирование DMA0 включаем заранее: DMA0 висит на AHB (RCU_AHBEN bit0),
-    // без тактов обращение к регистрам DMA подвешивает шину.
-    MFL_RCU_AHBEN |= M_RCU_DMA0EN;
-    
-    // Барьер синхронизации памяти
-    __DSB(); 
-    
-    // 2. GPIO Config
-    uint32_t temp_ctl0 = MFL_GPIOA_CTL0;
-    temp_ctl0 &= 0x0000FFFFU; 
-    
-    // PA4(CS)=Out, PA5(SCK)=Alt, PA6(DC)=Out, PA7(MOSI)=Alt
-    temp_ctl0 |= (0x3U << 16) | (0xBU << 20) | (0x3U << 24) | (0xBU << 28);
-    
-    MFL_GPIOA_CTL0 = temp_ctl0;
-    MFL_GPIOA_BOP = (1U << 4) | (1U << 6);
-    __DSB(); 
-    
-    // 3. SPI Config
-    MFL_SPI0_CTL0 &= ~M_SPI_SPIEN; 
-    
-    // Сбрасываем возможные флаги ошибок (Dummy read)
-    volatile uint32_t dummy = MFL_SPI0_STAT;
-    dummy = MFL_SPI0_DATA;
-    (void)dummy;
-    
-    uint32_t spi_cfg = 0;
-    spi_cfg |= M_SPI_MSTMOD;         
-    spi_cfg |= M_SPI_SWNSS | M_SPI_SWNSSEN; 
-    spi_cfg |= M_SPI_CKPL | M_SPI_CKPH;     
-    spi_cfg |= TFT_SPI_PSC;          
-    spi_cfg |= M_SPI_BDEN | M_SPI_BDOEN;
-    
-    MFL_SPI0_CTL0 = spi_cfg;
+    // 1. GPIO: CS=Out, DC=Out, SCK=AF, MOSI=AF (тактирование GPIO включает конструктор GPIO)
+    gpio::GPIO::get_instance(cs.port).value().set_pin_mode(cs.pin,    gpio::Pin_Mode::OUTPUT_PUSHPULL);
+    gpio::GPIO::get_instance(dc.port).value().set_pin_mode(dc.pin,    gpio::Pin_Mode::OUTPUT_PUSHPULL);
+    gpio::GPIO::get_instance(sck.port).value().set_pin_mode(sck.pin,  gpio::Pin_Mode::ALT_PUSHPULL);
+    gpio::GPIO::get_instance(mosi.port).value().set_pin_mode(mosi.pin, gpio::Pin_Mode::ALT_PUSHPULL);
+
+    // Уровни покоя: CS High, DC = DATA (High)
+    gpio::fast_write_pin(cs.port, cs.pin, true);
+    gpio::fast_write_pin(dc.port, dc.pin, true);
     __DSB();
-    
-    MFL_SPI0_CTL0 |= M_SPI_SPIEN;
 
+    // 2. SPI0: master bidirectional-TX (аналог BDEN|BDOEN), software NSS,
+    //    режим 3 (CKPL=1, CKPH=1), MSB first, делитель по умолчанию.
+    auto& spi = SPIx();
+    spi.init(spi::SPI_Config{
+        .operational_mode = spi::Operational_Mode::MTB_MODE,
+        .frame_format     = spi::Frame_Format::FF_8BIT,
+        .nss_type         = spi::NSS_Type::SOFTWARE_NSS,
+        .pclk_divider     = TFT_SPI_PCLK_DIVIDER,
+        .msbf             = spi::Endian_Type::MSBF,
+        .polarity_pull    = spi::Clock_Polarity::PULL_HIGH,
+        .clock_phase      = spi::Clock_Phase::PHASE_SECOND_EDGE,
+    });
+    spi.nss_internal_high();   // SWNSS=1 (не выбран) — паритет с прежней spi_cfg
+    spi.set_enable(true);
+    __DSB();
     return true;
 }
 
 // ==========================================================
-// === ФОРМАТ ===
+// === ФОРМАТ (errata: FF16 менять только при SPIEN=0) ===
 // ==========================================================
-// FF16 в CTL0 можно менять только при выключенном SPI (SPIEN=0) -
-// иначе содержимое сдвигового регистра/буферов «доедет» в новом формате.
 void spi_set_frame_format_direct(bool is_16bit) {
-    const uint32_t want = is_16bit ? M_SPI_FF16 : 0U;
-    if ((MFL_SPI0_CTL0 & M_SPI_FF16) == want) return;   // уже в нужном режиме
+    auto& spi = SPIx();
+    volatile uint32_t* ctl0 = spi.reg_address(spi::SPI_Regs::CTL0);
+    const uint32_t want = is_16bit ? SPI_FF16_BIT : 0U;
+    if ((*ctl0 & SPI_FF16_BIT) == want) return;   // уже в нужном режиме
 
-    MFL_SPI0_CTL0 &= ~M_SPI_SPIEN;                       // SPI выключен
+    spi.set_enable(false);                         // SPI выключен
     __DSB();
-
-    if (is_16bit) MFL_SPI0_CTL0 |= M_SPI_FF16;           // FF16 = 1 → 16-битный кадр
-    else          MFL_SPI0_CTL0 &= ~M_SPI_FF16;          // FF16 = 0 → 8-битный кадр
-
-    // Сброс буферов (errata fix)
-    volatile uint32_t dummy = MFL_SPI0_STAT;
-    dummy = MFL_SPI0_DATA;
-    (void)dummy;
+    spi.data_frame_format_config(is_16bit ? spi::Frame_Format::FF_16BIT
+                                          : spi::Frame_Format::FF_8BIT);
+    spi_flush_buffers();                           // errata fix: сброс буферов
     __DSB();
-
-    MFL_SPI0_CTL0 |= M_SPI_SPIEN;                        // SPI включен обратно
+    spi.set_enable(true);                          // SPI включён обратно
     __DSB();
 }
 
 // ==========================================================
-// === ПИНЫ ===
+// === ПИНЫ (CS/DC через port_pin_map платы) ===
 // ==========================================================
 void spi_cs_control_direct(bool select) {
-    if (select) MFL_GPIOA_BC  = (1U << 4);
-    else        MFL_GPIOA_BOP = (1U << 4);
+    const PortPinPair& cs = port_pin_map[TFT_CS_PIN];
+    gpio::fast_write_pin(cs.port, cs.pin, !select);   // select=true -> CS Low
 }
-
 void spi_dc_control_direct(bool data) {
-    if (data) MFL_GPIOA_BOP = (1U << 6);
-    else      MFL_GPIOA_BC  = (1U << 6);
+    const PortPinPair& dc = port_pin_map[TFT_DC_PIN];
+    gpio::fast_write_pin(dc.port, dc.pin, data);      // data=true -> DC High
 }
 
 // ==========================================================
 // === ПЕРЕДАЧА ДАННЫХ ===
 // ==========================================================
-
 void spi_write_byte_direct(uint8_t data) {
+    auto& spi = SPIx();
     uint32_t guard = 0;
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
-        if (++guard > 1000000UL) return;   // защита от зависания
-    MFL_SPI0_DATA = data;
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE))
+        if (++guard > 1000000UL) return;
+    spi.data_transmit(data);
 }
-
 void spi_write_word_direct(uint16_t data) {
-    // 1. MSB
+    auto& spi = SPIx();
     uint32_t guard = 0;
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
-        if (++guard > 1000000UL) return;
-    MFL_SPI0_DATA = (uint8_t)(data >> 8);
-
-    // 2. LSB
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE)) if (++guard > 1000000UL) return;
+    spi.data_transmit((uint16_t)(data >> 8));       // MSB
     guard = 0;
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
-        if (++guard > 1000000UL) return;
-    MFL_SPI0_DATA = (uint8_t)(data & 0xFF);
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE)) if (++guard > 1000000UL) return;
+    spi.data_transmit((uint16_t)(data & 0xFF));     // LSB
 }
-
-// Одиночный 16-битный кадр (требуется FF16=1, т.е. режим DATASIZE_16BIT).
-// SPI отдаёт старшие биты вперёд.
 void spi_write_frame16_direct(uint16_t data) {
+    auto& spi = SPIx();
     uint32_t guard = 0;
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
-        if (++guard > 1000000UL) return;
-    MFL_SPI0_DATA = (uint32_t)data;
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE)) if (++guard > 1000000UL) return;
+    spi.data_transmit(data);
 }
-
 void spi_write_buf_direct(const uint8_t* buf, size_t len) {
+    auto& spi = SPIx();
     while (len--) {
         uint32_t guard = 0;
-        while (!(MFL_SPI0_STAT & M_SPI_TBE))
-            if (++guard > 1000000UL) return;
-        MFL_SPI0_DATA = *buf++;
+        while (!spi.get_flag(spi::Status_Flags::FLAG_TBE)) if (++guard > 1000000UL) return;
+        spi.data_transmit(*buf++);
     }
 }
-
 void spi_wait_for_tx_complete_direct() {
+    auto& spi = SPIx();
     uint32_t guard = 0;
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
-        if (++guard > 1000000UL) return;
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE)) if (++guard > 1000000UL) return;
     guard = 0;
-    while (MFL_SPI0_STAT & M_SPI_TRANS)
-        if (++guard > 1000000UL) return;
+    while (spi.get_flag(spi::Status_Flags::FLAG_TRANS)) if (++guard > 1000000UL) return;
 }
-
-// ==========================================================
-// === DMA для SPI0 TX (DMA0 Channel 2 на GD32F303) ===
-// ==========================================================
-// По даташиту GD32F303 запрос SPI0_TX аппаратно подключён к DMA0 Channel 2
-//
-// Порядок, требуемый даташитом:
-//   SPI:  FF16 -> CKPL/CKPH -> LF -> режимы -> SPIEN (последним!)
-//   DMA:  убедиться что CHEN=0 -> CTL (M2M, DIR, CMEN, PRIO, ширины,
-//         генерация адресов, прерывания) -> PADDR -> MADDR -> CNT -> CHEN=1
-//   SPI:  DMATEN включается ПОСЛЕ того, как канал DMA настроен и включён.
-//   Errata GD32: менять FF16 (и любой переключать тактирование SPI) можно
-//   только при SPIEN=0, после переключения — сбросить буферы и включить SPI.
-//
-// ==========================================================
 
 // ==========================================================
 // === ПОДСВЕТКА ===
@@ -284,210 +185,181 @@ void tft_backlight_set(pin_size_t bl_pin, bool on) {
     }
 }
 
-// ==========================================================
-// === DMA: SPI0 TX через DMA0 CH2 ===
-// ==========================================================
-// Транзакция разделена на два шага, чтобы CS/DC можно было установить
-// МЕЖДУ ними: как только DMATEN=1, SPI (TBE=1) сразу же запрашивает данные
-// у DMA и первый кадр стартует мгновенно. Если к этому моменту CS ещё
-// поднят, первый пиксель теряется и весь ряд сдвигается.
-//
-//   spi_dma_prepare()  — SPI переведён в 16-битный режим безопасно (errata),
-//                        канал DMA сконфигурирован, но CHEN ещё = 0
-//   ...вызов поднимает DC/CS...
-//   spi_dma_trigger() — CHEN=1, затем DMATEN=1 (канал ждёт запрос первым)
-//
-// Watchdog: если счётчик канала не двигается дольше DMA_STALL_TIMEOUT_US,
-// транзакция считается сорванной (иначе Marlin навсегда посчитал бы TFT занятым).
-static uint32_t dma_last_count = 0;
-static uint32_t dma_progress_us = 0;
-static uint32_t dma_start_us = 0;
 
-// Ожидание флага SPI с таймаутом (без него любой сбой превращается в вечный цикл).
-// Fast-path: если флаг уже в нужном состоянии (типичный случай после
-// spi_dma_halt_only / spi_is_idle_fast), выходим за 1 цикл без micros().
+// ==========================================================
+// === ВСПОМОГАТЕЛЬНЫЕ (SPI idle / flush / halt) ===
+// ==========================================================
+static void spi_flush_buffers() {
+    auto& spi = SPIx();
+    volatile uint32_t dummy = *spi.reg_address(spi::SPI_Regs::STAT);
+    dummy = spi.data_receive();
+    (void)dummy;
+}
 static bool spi_wait_tbe() {
-    if (MFL_SPI0_STAT & M_SPI_TBE) return true;          // fast-path
+    auto& spi = SPIx();
+    if (spi.get_flag(spi::Status_Flags::FLAG_TBE)) return true;          // fast-path
     const uint32_t t0 = micros();
-    while (!(MFL_SPI0_STAT & M_SPI_TBE))
+    while (!spi.get_flag(spi::Status_Flags::FLAG_TBE))
         if (micros() - t0 > DMA_SPI_FLAG_TIMEOUT_US) return false;
     return true;
 }
 static bool spi_wait_tx_idle() {
-    if (!(MFL_SPI0_STAT & M_SPI_TRANS)) return true;     // fast-path
+    auto& spi = SPIx();
+    if (!spi.get_flag(spi::Status_Flags::FLAG_TRANS)) return true;       // fast-path
     const uint32_t t0 = micros();
-    while (MFL_SPI0_STAT & M_SPI_TRANS)
+    while (spi.get_flag(spi::Status_Flags::FLAG_TRANS))
         if (micros() - t0 > DMA_SPI_FLAG_TIMEOUT_US) return false;
     return true;
 }
-
-// Быстрая проверка: SPI гарантированно свободен (TBE=1, TRANS=0).
-// Используется после spi_dma_poll() != BUSY, когда TRANS уже проверен.
 static inline bool spi_is_idle_fast() {
-    return (MFL_SPI0_STAT & (M_SPI_TBE | M_SPI_TRANS)) == M_SPI_TBE;
+    auto& spi = SPIx();
+    return spi.get_flag(spi::Status_Flags::FLAG_TBE) && !spi.get_flag(spi::Status_Flags::FLAG_TRANS);
 }
-
-// Сброс буферов SPI (чтение STAT + DATA) — errata GD32
-static void spi_flush_buffers() {
-    volatile uint32_t dummy = MFL_SPI0_STAT;
-    dummy = MFL_SPI0_DATA;
-    (void)dummy;
-    __DSB();
-}
-
 static void dma_channel_halt() {
-    MFL_SPI0_CTL1 &= ~M_SPI_DMATEN;      // SPI больше не просит данные
-    MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;     // глушим канал
-    MFL_DMA0_INTC = M_DMA_CH2_ALL;       // сброс GIF/FTFIF/HTFIF/ERRIF
+    auto& spi = SPIx(); auto& dma = DMAx();
+    spi.set_dma_enable(spi::DMA_Direction::DMA_TX, false);   // SPI больше не просит данные
+    dma.set_channel_enable(false);                           // глушим канал
+    dma.clear_flag(dma::Status_Flags::FLAG_GIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_FTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_HTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_ERRIF);
     __DSB();
 }
-
-// Минимальная остановка: глушим DMA-канал и DMATEN, НЕ трогаем формат кадра.
-// Вызывается ТОЛЬКО при DmaStatus::DONE (spi_dma_poll подтвердил TRANS=0).
-// Для ERROR/ABORT используется spi_dma_stop() — полный reset периферии.
-// Экономит spi_wait_tbe + spi_wait_tx_idle + spi_restore_8bit (~50-80 циклов).
-void spi_dma_halt_only() {
-    spi_state = SpiState::Idle;  // ← guard: back to idle
-    // Safety net: если по какой-то причине SPI ещё не idle (аппаратный сбой),
-    // дождёмся флагов. В нормальном пути spi_dma_poll() уже проверил TRANS=0,
-    // поэтому spi_is_idle_fast() вернёт true за 1 цикл.
-    if (!spi_is_idle_fast()) {
-        spi_wait_tbe();
-        spi_wait_tx_idle();
-    }
-    MFL_SPI0_CTL1 &= ~M_SPI_DMATEN;
-    MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;
-    MFL_DMA0_INTC = M_DMA_CH2_ALL;
-    __DSB();
-}
-
-// Возврат SPI в 8-битный режим. Смена FF16 — только при SPIEN=0 (errata).
 static void spi_restore_8bit() {
-    MFL_SPI0_CTL0 &= ~M_SPI_SPIEN;
-    __DSB();
-
-    MFL_SPI0_CTL0 &= ~M_SPI_FF16;
+    auto& spi = SPIx();
+    spi.set_enable(false); __DSB();
+    spi.data_frame_format_config(spi::Frame_Format::FF_8BIT);
     spi_flush_buffers();
-
-    MFL_SPI0_CTL0 |= M_SPI_SPIEN;
-    __DSB();
+    spi.set_enable(true); __DSB();
 }
 
-// Подготовка транзакции: SPI -> 16 бит, канал DMA сконфигурирован, CHEN=0.
-// count_words = число 16-битных переносов (пикселей).
+// Watchdog-состояние транзакции
+static uint32_t dma_last_count = 0;
+static uint32_t dma_progress_us = 0;
+static uint32_t dma_start_us = 0;
+
+// ==========================================================
+// === DMA: SPI0 TX через DMA0 CH2 (двухфазно) ===
+// ==========================================================
 bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment) {
-    // CNT[15:0]: 0 означает «нет транзакций», > 0xFFFF физически невозможен
     if (count_words == 0 || count_words > M_DMA_CNT_MAX) return false;
-    // 16-битные переносы: адрес памяти должен быть выровнен (аппаратно
-    // младшие биты отбрасываются, и данные тихо «сдвигаются»)
-    if (mem_addr & 1U) return false;
+    if (mem_addr & 1U) return false;   // 16-битные переносы: адрес выровнен
 
-    spi_state = SpiState::DmaPrepared;  // ← guard: we are now in prepared state
+    auto& spi = SPIx(); auto& dma = DMAx();
+    volatile uint32_t* chctl = dma_chxctl();
+    spi_state = SpiState::DmaPrepared;
 
-    // 1. Останавливаем канал ТОЛЬКО если он активен (экономия ~10 циклов
-    //    при последовательных DMA-транзакциях, когда канал уже погашен).
-    if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) {
-        dma_channel_halt();
-    }
+    // 1. Останавливаем канал ТОЛЬКО если он активен
+    if (*chctl & DMA_CHEN_BIT) dma_channel_halt();
 
-    // 2. SPI disabling sequence: дождаться TBE=1, затем TRANS=0.
-    //    При последовательных DMA (isBusy уже подтвердил idle) эти проверки
-    //    проходят за 1-2 цикла (флаги уже установлены).
+    // 2. SPI disabling sequence: TBE=1, затем TRANS=0
     if (!spi_wait_tbe()) return false;
     if (!spi_wait_tx_idle()) return false;
 
-    // 3. Даташит: PADDR/MADDR/CNT/CTL нельзя писать, пока CHEN=1.
-    //    Убеждаемся, что канал действительно выключен.
-    if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) {
-        MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;
+    // 3. Убеждаемся, что CHEN=0 (PADDR/MADDR/CNT нельзя писать при CHEN=1)
+    if (*chctl & DMA_CHEN_BIT) {
+        dma.set_channel_enable(false);
         uint32_t guard = 0;
-        while ((MFL_DMA0_CH2_CTL & M_DMA_CHEN) && ++guard < 1000000UL) {}
-        if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) return false;   // канал не гаснет
+        while ((*chctl & DMA_CHEN_BIT) && ++guard < 1000000UL) {}
+        if (*chctl & DMA_CHEN_BIT) return false;
     }
-    MFL_DMA0_INTC = M_DMA_CH2_ALL;
+    dma.clear_flag(dma::Status_Flags::FLAG_GIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_FTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_HTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_ERRIF);
     __DSB();
 
-    // 4. Errata: FF16 меняется только при выключенном SPI, буферы сбрасываются.
-    //    Если SPI УЖЕ в 16-битном режиме (последовательные DMA-транзакции) —
-    //    пропускаем полный цикл SPI off→on, экономя ~40-60 циклов на строку.
-    if (!(MFL_SPI0_CTL0 & M_SPI_FF16)) {
-        MFL_SPI0_CTL0 &= ~M_SPI_SPIEN;
-        __DSB();
-        MFL_SPI0_CTL0 |=  M_SPI_FF16;     // 16-битный кадр
-        MFL_SPI0_CTL0 &= ~M_SPI_LF;       // LF=0 -> MSB first, как требует ST7789
+    // 4. Errata: FF16 только при выключенном SPI; буферы сбрасываются.
+    //    Если уже 16-битный режим (последовательные DMA) — пропускаем цикл.
+    volatile uint32_t* ctl0 = spi.reg_address(spi::SPI_Regs::CTL0);
+    if (!(*ctl0 & SPI_FF16_BIT)) {
+        spi.set_enable(false); __DSB();
+        spi.data_frame_format_config(spi::Frame_Format::FF_16BIT);  // LF=0 (MSB) уже в конфиге
         spi_flush_buffers();
     }
 
-    // 5. Конфигурирование канала (CHEN всё ещё 0)
-    MFL_DMA0_CH2_PADDR = (uint32_t)(MFL_SPI0_BASE + 0x0CU);  // SPI0 DATA
-    MFL_DMA0_CH2_MADDR = mem_addr;
-    MFL_DMA0_CH2_CNT   = count_words;
-
-    // M2M=0, CMEN=0, PNAGA=0 (SPI_DATA — постоянный адрес), прерывания
-    // канала не используются (опрос флагов), поэтому FTFIE/HTFIE/ERRIE=0.
-    uint32_t ctl = M_DMA_DIR_M2P | M_DMA_PWIDTH_16 | M_DMA_MWIDTH_16 | M_DMA_PRIO_HIGH;
-    if (mem_increment) ctl |= M_DMA_MNAGA;
-    MFL_DMA0_CH2_CTL = ctl;
+    // 5. Конфигурирование канала (init() сам держит CHEN=0)
+    dma.init(dma::DMA_Config{
+        .count              = count_words,
+        .memory_address     = mem_addr,
+        .peripheral_address = (uint32_t)(uintptr_t)spi.reg_address(spi::SPI_Regs::DATA),
+        .peripheral_bit_width = dma::Bit_Width::WIDTH_16BIT,
+        .memory_bit_width     = dma::Bit_Width::WIDTH_16BIT,
+        .peripheral_increase  = dma::Increase_Mode::INCREASE_DISABLE,
+        .memory_increase      = mem_increment ? dma::Increase_Mode::INCREASE_ENABLE
+                                             : dma::Increase_Mode::INCREASE_DISABLE,
+        .channel_priority     = dma::Channel_Priority::HIGH_PRIORITY,
+        .direction            = dma::Transfer_Direction::M2P,
+        .circular_mode        = false,
+        .memory_to_memory     = false,
+    });
+    // Прерывания канала не используются (опрос флагов) — гарантированно выключены.
+    dma.set_interrupt_enable(dma::Interrupt_Type::INTR_FTFIE, false);
+    dma.set_interrupt_enable(dma::Interrupt_Type::INTR_HTFIE, false);
+    dma.set_interrupt_enable(dma::Interrupt_Type::INTR_ERRIE, false);
     __DSB();
 
-    // 6. SPI включается последним шагом своей инициализации
-    MFL_SPI0_CTL0 |= M_SPI_SPIEN;
-    __DSB();
+    // 6. SPI включается последним шагом (no-op, если уже включён)
+    spi.set_enable(true); __DSB();
 
-    // 7. Настройка watchdog'а транзакции
+    // 7. Watchdog
     const uint32_t now = micros();
     dma_last_count = count_words;
     dma_progress_us = now;
-    dma_start_us = now;   // elapsed = now - start (safe across wraparound)
+    dma_start_us = now;
     return true;
 }
 
-// Запуск переноса — вызывать сразу после того, как CS/DC установлены.
+
 void spi_dma_trigger() {
-    spi_state = SpiState::DmaActive;  // ← guard: DMA is now running
-    MFL_DMA0_CH2_CTL |= M_DMA_CHEN;   // канал ждёт запрос от SPI0_TX
-    __DSB();
-    MFL_SPI0_CTL1 |= M_SPI_DMATEN;    // только теперь SPI начнёт просить данные
-    __DSB();
+    auto& spi = SPIx(); auto& dma = DMAx();
+    spi_state = SpiState::DmaActive;
+    dma.set_channel_enable(true); __DSB();                 // канал ждёт запрос от SPI0_TX
+    spi.set_dma_enable(spi::DMA_Direction::DMA_TX, true); __DSB();
 }
 
-
-// Остановка транзакции. Порядок — «SPI disabling sequence» из даташита:
-// снять DMA-запросы, дождаться TBE=1, затем TRANS=0, и только после этого
-// выключать SPI (SPIEN=0) и менять формат кадра.
 void spi_dma_stop() {
-    spi_state = SpiState::Idle;  // ← guard: forced stop → idle
-    // 1. SPI больше не генерирует запросы, канал выключен, флаги сняты
+    spi_state = SpiState::Idle;
     dma_channel_halt();
-
-    // 2. Досылаем то, что уже загружено в сдвиговый регистр
     spi_wait_tbe();
     spi_wait_tx_idle();
-
-    // 3. Возврат в 8-битный формат — только на выключенном SPI (errata)
     spi_restore_8bit();
 }
 
+void spi_dma_halt_only() {
+    auto& spi = SPIx(); auto& dma = DMAx();
+    spi_state = SpiState::Idle;
+    if (!spi_is_idle_fast()) { spi_wait_tbe(); spi_wait_tx_idle(); }
+    spi.set_dma_enable(spi::DMA_Direction::DMA_TX, false);
+    dma.set_channel_enable(false);
+    dma.clear_flag(dma::Status_Flags::FLAG_GIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_FTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_HTFIF);
+    dma.clear_flag(dma::Status_Flags::FLAG_ERRIF);
+    __DSB();
+}
+
 DmaStatus spi_dma_poll() {
-    // Канал ещё передаёт данные в SPI DATA?
-    if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) {
-        // Аппаратная ошибка канала (bus fault, невалидный адрес)
-        if (MFL_DMA0_INTF & M_DMA_ERRIF2) {
+    auto& spi = SPIx(); auto& dma = DMAx();
+    volatile uint32_t* chctl = dma_chxctl();
+
+    if (*chctl & DMA_CHEN_BIT) {
+        if (dma.get_flag(dma::Status_Flags::FLAG_ERRIF)) {
             dma_channel_halt();
-            spi_state = SpiState::Error;  // ← guard: unrecoverable
+            spi_state = SpiState::Error;
             return DmaStatus::ERROR;
         }
-
-        if (MFL_DMA0_INTF & M_DMA_FTFIF2) {
-            // Полный перенос завершён (в normal-режиме аппаратно сам снимает CHEN)
-            MFL_DMA0_INTC = M_DMA_CH2_ALL;
-            MFL_DMA0_CH2_CTL &= ~M_DMA_CHEN;
+        if (dma.get_flag(dma::Status_Flags::FLAG_FTFIF)) {
+            dma.clear_flag(dma::Status_Flags::FLAG_GIF);
+            dma.clear_flag(dma::Status_Flags::FLAG_FTFIF);
+            dma.clear_flag(dma::Status_Flags::FLAG_HTFIF);
+            dma.clear_flag(dma::Status_Flags::FLAG_ERRIF);
+            dma.set_channel_enable(false);
             __DSB();
         }
         else {
-            const uint32_t count = MFL_DMA0_CH2_CNT;
+            const uint32_t count = dma.get_transfer_count();
             const uint32_t now = micros();
-
             if (count != dma_last_count) {                 // прогресс есть
                 dma_last_count = count;
                 dma_progress_us = now;
@@ -496,21 +368,20 @@ DmaStatus spi_dma_poll() {
                 dma_channel_halt();                        // запросов от SPI нет
                 return DmaStatus::ABORT;
             }
-
-            if (now - dma_start_us > DMA_TRANSFER_TIMEOUT_US) {  // суммарный предел (safe across wraparound)
+            if (now - dma_start_us > DMA_TRANSFER_TIMEOUT_US) {  // суммарный предел
                 dma_channel_halt();
                 return DmaStatus::ABORT;
             }
-
             return DmaStatus::BUSY;
         }
     }
 
     // DMA закончил, но SPI ещё сдвигает последний кадр
-    if (MFL_SPI0_STAT & M_SPI_TRANS) return DmaStatus::BUSY;
+    if (spi.get_flag(spi::Status_Flags::FLAG_TRANS)) return DmaStatus::BUSY;
     return DmaStatus::DONE;
 }
 
 } // namespace hal_bridge
 
 #endif // ARDUINO_ARCH_MFL
+
