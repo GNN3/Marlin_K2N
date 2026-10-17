@@ -45,11 +45,36 @@ namespace hal_bridge {
     // 1) spi_dma_prepare() — SPI -> 16-bit frame, DMA channel configured, CHEN=0
     // 2) caller asserts DC/CS
     // 3) spi_dma_trigger() — CHEN=1, then SPI DMATEN=1
+
+    enum class DmaStatus : uint8_t {
+        BUSY,       // Транзакция ещё идёт
+        DONE,       // Полный перенос завершён (FTFIF)
+        ERROR,      // Аппаратная ошибка DMA (ERRIF) — данные неполные
+        ABORT,      // Stall / deadline — данные неполные
+    };
+
+    // --- State machine (guard layer, NOT a replacement for hardware reads) ---
+    // Tracks the EXPECTED protocol state. Hardware flags remain authoritative
+    // for "is DMA done?" decisions. The state machine catches programming errors
+    // (e.g., trigger() without prepare(), double-trigger, wrong teardown path).
+    enum class SpiState : uint8_t {
+        Idle,           // No transaction. CS high. SPI in 8-bit mode.
+        Tx8,            // Software 8-bit transfer. CS low. CPU writing bytes.
+        Tx16,           // Software 16-bit transfer. CS low. CPU writing frames.
+        DmaPrepared,    // DMA configured (CHEN=0, DMATEN=0). CS/DC not yet set.
+        DmaActive,      // DMA transferring (CHEN=1, DMATEN=1). CS low.
+        Error,          // Unrecoverable fault. Requires re-init.
+    };
+
     bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment);
     void spi_dma_trigger();
     void spi_dma_stop();
     void spi_dma_halt_only();   // Минимальная остановка без смены формата кадра
-    bool spi_dma_is_busy();
+    DmaStatus spi_dma_poll();   // Опрос состояния (заменяет spi_dma_is_busy)
+
+    // State machine accessors (for TFT_SPI layer guard checks)
+    SpiState spi_get_state();
+    void spi_set_state(SpiState s);
 
     // --- Wrappers ---
     inline bool spi_init(pin_size_t sck_pin, pin_size_t mosi_pin, pin_size_t miso_pin = NO_PIN) { 

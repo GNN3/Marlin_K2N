@@ -112,6 +112,16 @@
 namespace hal_bridge {
 
 // ==========================================================
+// === STATE MACHINE (guard layer) ===
+// ==========================================================
+// Software shadow of the protocol state. NOT a replacement for hardware reads.
+// Used by TFT_SPI to validate transitions and catch programming errors.
+static SpiState spi_state = SpiState::Idle;
+
+SpiState spi_get_state() { return spi_state; }
+void spi_set_state(SpiState s) { spi_state = s; }
+
+// ==========================================================
 // === ИНИЦИАЛИЗАЦИЯ ===
 // ==========================================================
 bool spi_init_direct() {
@@ -291,16 +301,20 @@ void tft_backlight_set(pin_size_t bl_pin, bool on) {
 // транзакция считается сорванной (иначе Marlin навсегда посчитал бы TFT занятым).
 static uint32_t dma_last_count = 0;
 static uint32_t dma_progress_us = 0;
-static uint32_t dma_deadline_us = 0;
+static uint32_t dma_start_us = 0;
 
-// Ожидание флага SPI с таймаутом (без него любой сбой превращается в вечный цикл)
+// Ожидание флага SPI с таймаутом (без него любой сбой превращается в вечный цикл).
+// Fast-path: если флаг уже в нужном состоянии (типичный случай после
+// spi_dma_halt_only / spi_is_idle_fast), выходим за 1 цикл без micros().
 static bool spi_wait_tbe() {
+    if (MFL_SPI0_STAT & M_SPI_TBE) return true;          // fast-path
     const uint32_t t0 = micros();
     while (!(MFL_SPI0_STAT & M_SPI_TBE))
         if (micros() - t0 > DMA_SPI_FLAG_TIMEOUT_US) return false;
     return true;
 }
 static bool spi_wait_tx_idle() {
+    if (!(MFL_SPI0_STAT & M_SPI_TRANS)) return true;     // fast-path
     const uint32_t t0 = micros();
     while (MFL_SPI0_STAT & M_SPI_TRANS)
         if (micros() - t0 > DMA_SPI_FLAG_TIMEOUT_US) return false;
@@ -308,7 +322,7 @@ static bool spi_wait_tx_idle() {
 }
 
 // Быстрая проверка: SPI гарантированно свободен (TBE=1, TRANS=0).
-// Используется после spi_dma_is_busy()==false, когда TRANS уже проверен.
+// Используется после spi_dma_poll() != BUSY, когда TRANS уже проверен.
 static inline bool spi_is_idle_fast() {
     return (MFL_SPI0_STAT & (M_SPI_TBE | M_SPI_TRANS)) == M_SPI_TBE;
 }
@@ -329,11 +343,13 @@ static void dma_channel_halt() {
 }
 
 // Минимальная остановка: глушим DMA-канал и DMATEN, НЕ трогаем формат кадра.
-// Вызывается когда spi_dma_is_busy() уже подтвердил TRANS=0 (SPI свободен).
+// Вызывается ТОЛЬКО при DmaStatus::DONE (spi_dma_poll подтвердил TRANS=0).
+// Для ERROR/ABORT используется spi_dma_stop() — полный reset периферии.
 // Экономит spi_wait_tbe + spi_wait_tx_idle + spi_restore_8bit (~50-80 циклов).
 void spi_dma_halt_only() {
+    spi_state = SpiState::Idle;  // ← guard: back to idle
     // Safety net: если по какой-то причине SPI ещё не idle (аппаратный сбой),
-    // дождёмся флагов. В нормальном пути spi_dma_is_busy() уже проверил TRANS=0,
+    // дождёмся флагов. В нормальном пути spi_dma_poll() уже проверил TRANS=0,
     // поэтому spi_is_idle_fast() вернёт true за 1 цикл.
     if (!spi_is_idle_fast()) {
         spi_wait_tbe();
@@ -365,6 +381,8 @@ bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment
     // 16-битные переносы: адрес памяти должен быть выровнен (аппаратно
     // младшие биты отбрасываются, и данные тихо «сдвигаются»)
     if (mem_addr & 1U) return false;
+
+    spi_state = SpiState::DmaPrepared;  // ← guard: we are now in prepared state
 
     // 1. Останавливаем канал ТОЛЬКО если он активен (экономия ~10 циклов
     //    при последовательных DMA-транзакциях, когда канал уже погашен).
@@ -420,12 +438,13 @@ bool spi_dma_prepare(uint32_t mem_addr, uint32_t count_words, bool mem_increment
     const uint32_t now = micros();
     dma_last_count = count_words;
     dma_progress_us = now;
-    dma_deadline_us = now + DMA_TRANSFER_TIMEOUT_US;
+    dma_start_us = now;   // elapsed = now - start (safe across wraparound)
     return true;
 }
 
 // Запуск переноса — вызывать сразу после того, как CS/DC установлены.
 void spi_dma_trigger() {
+    spi_state = SpiState::DmaActive;  // ← guard: DMA is now running
     MFL_DMA0_CH2_CTL |= M_DMA_CHEN;   // канал ждёт запрос от SPI0_TX
     __DSB();
     MFL_SPI0_CTL1 |= M_SPI_DMATEN;    // только теперь SPI начнёт просить данные
@@ -437,6 +456,7 @@ void spi_dma_trigger() {
 // снять DMA-запросы, дождаться TBE=1, затем TRANS=0, и только после этого
 // выключать SPI (SPIEN=0) и менять формат кадра.
 void spi_dma_stop() {
+    spi_state = SpiState::Idle;  // ← guard: forced stop → idle
     // 1. SPI больше не генерирует запросы, канал выключен, флаги сняты
     dma_channel_halt();
 
@@ -448,13 +468,14 @@ void spi_dma_stop() {
     spi_restore_8bit();
 }
 
-bool spi_dma_is_busy() {
+DmaStatus spi_dma_poll() {
     // Канал ещё передаёт данные в SPI DATA?
     if (MFL_DMA0_CH2_CTL & M_DMA_CHEN) {
-        // Ошибка канала — транзакцию считаем завершённой, иначе UI встанет намертво
+        // Аппаратная ошибка канала (bus fault, невалидный адрес)
         if (MFL_DMA0_INTF & M_DMA_ERRIF2) {
             dma_channel_halt();
-            return false;
+            spi_state = SpiState::Error;  // ← guard: unrecoverable
+            return DmaStatus::ERROR;
         }
 
         if (MFL_DMA0_INTF & M_DMA_FTFIF2) {
@@ -473,21 +494,21 @@ bool spi_dma_is_busy() {
             }
             else if (now - dma_progress_us > DMA_STALL_TIMEOUT_US) {
                 dma_channel_halt();                        // запросов от SPI нет
-                return false;
+                return DmaStatus::ABORT;
             }
 
-            if (now > dma_deadline_us) {                   // суммарный предел
+            if (now - dma_start_us > DMA_TRANSFER_TIMEOUT_US) {  // суммарный предел (safe across wraparound)
                 dma_channel_halt();
-                return false;
+                return DmaStatus::ABORT;
             }
 
-            return true;
+            return DmaStatus::BUSY;
         }
     }
 
     // DMA закончил, но SPI ещё сдвигает последний кадр
-    if (MFL_SPI0_STAT & M_SPI_TRANS) return true;
-    return false;
+    if (MFL_SPI0_STAT & M_SPI_TRANS) return DmaStatus::BUSY;
+    return DmaStatus::DONE;
 }
 
 } // namespace hal_bridge

@@ -13,6 +13,7 @@ using namespace hal_bridge;
 bool TFT_SPI::tft_busy = false;
 uint16_t TFT_SPI::fill_color = 0;
 uint16_t TFT_SPI::data_width = DATASIZE_8BIT;
+hal_bridge::DmaStatus TFT_SPI::last_dma_status = hal_bridge::DmaStatus::DONE;
 
 // =========================================================
 // === БАЗОВАЯ ЛОГИКА ===
@@ -22,14 +23,27 @@ bool TFT_SPI::get_busy() { return tft_busy; }
 
 bool TFT_SPI::isBusy() {
     if (!tft_busy) return false;
-    if (hal_bridge::spi_dma_is_busy()) return true;
 
-    // Транзакция завершена (spi_dma_is_busy подтвердил TRANS=0).
-    // Глушим DMA-канал БЕЗ возврата в 8-битный формат — это сделает
-    // spi_set_frame_format_direct(false) в dataTransferBegin/writeSequence,
-    // когда формат действительно нужен. При последовательных DMA-строках
-    // SPI остаётся в 16-битном режиме и prepare() пропускает переключение.
-    hal_bridge::spi_dma_halt_only();
+    hal_bridge::DmaStatus st = hal_bridge::spi_dma_poll();
+    if (st == hal_bridge::DmaStatus::BUSY) return true;
+
+    // Транзакция завершена (DONE / ERROR / ABORT).
+    // Сохраняем статус для Queue: ERROR/ABORT → данные неполные.
+    last_dma_status = st;
+
+    if (st == hal_bridge::DmaStatus::DONE) {
+        // Штатное завершение: SPI гарантированно idle (TRANS=0 подтверждён
+        // в spi_dma_poll()). Глушим DMA-канал БЕЗ смены формата — следующая
+        // DMA-строка использует spi_dma_prepare() с FF16 уже = 1.
+        hal_bridge::spi_dma_halt_only();
+    }
+    else {
+        // ERROR / ABORT: SPI может быть в промежуточном или stuck-состоянии.
+        // Полный reset: дождаться idle (bounded), затем SPI off → flush → SPI on.
+        // Это гарантирует чистое состояние периферии для следующей транзакции.
+        hal_bridge::spi_dma_stop();
+    }
+
     hal_bridge::spi_cs_control_direct(false);   // CS High
     data_width = DATASIZE_8BIT;
     set_busy(false);
@@ -241,6 +255,10 @@ void TFT_SPI::writeSequence_DMA(uint16_t *data, uint32_t count) {
 
     // 1. SPI -> 16-битный кадр + конфигурирование канала DMA (CHEN остаётся 0)
     if (!hal_bridge::spi_dma_prepare((uint32_t)(uintptr_t)data, count, true)) {
+        // prepare не трогал CS и не запускал DMA — состояние чистое.
+        // Сбрасываем busy, чтобы writeSequence не выполнял лишний isBusy()-teardown.
+        set_busy(false);
+        data_width = DATASIZE_8BIT;
         writeSequence(data, count);   // не удалось — работаем побайтно
         return;
     }
@@ -267,6 +285,9 @@ void TFT_SPI::writeMultiple_DMA(uint16_t color, uint32_t count) {
     fill_color = color;
 
     if (!hal_bridge::spi_dma_prepare((uint32_t)(uintptr_t)&fill_color, count, false)) {
+        // prepare не трогал CS и не запускал DMA — состояние чистое.
+        set_busy(false);
+        data_width = DATASIZE_8BIT;
         writeMultiple(color, count);
         return;
     }

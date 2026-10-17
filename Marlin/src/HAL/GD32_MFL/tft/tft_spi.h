@@ -12,6 +12,7 @@ class TFT_SPI {
     static bool tft_busy;
     static uint16_t fill_color;   // Static source for writeMultiple_DMA (16-bit, no increment)
     static uint16_t data_width;   // Текущий формат транзакции: DATASIZE_8BIT / DATASIZE_16BIT
+    static hal_bridge::DmaStatus last_dma_status;  // Результат последней DMA-транзакции
 
 public:
     // Инициализация и состояние
@@ -20,6 +21,9 @@ public:
     static bool get_busy();
     static bool isBusy();
     static void abort();
+
+    // Статус последней DMA-транзакции (для retry/диагностики в Queue)
+    static hal_bridge::DmaStatus get_last_dma_status() { return last_dma_status; }
     
     // Идентификация и управление
     static uint32_t getID();
