@@ -133,21 +133,25 @@ public:
 
   // ADC methods
   static uint16_t adc_result;
+  static bool adc_conv_active;   // true while a non-blocking conversion is in flight
 
   // Called by Temperature::init once at startup
-  static void adc_init() { analogReadResolution(HAL_ADC_RESOLUTION); }
+  static void adc_init();
 
   // Called by Temperature::init for each sensor at startup
   static void adc_enable(const pin_t pin) { pinMode(pin, INPUT); }
 
-  // Called from Temperature::isr to start ADC sampling on the given pin
-  static void adc_start(const pin_t pin) { adc_result = static_cast<uint16_t>(analogRead(pin)); }
+  // Called from Temperature::isr to start ADC sampling on the given pin.
+  // Non-blocking: configures the channel and triggers a software conversion,
+  // then returns immediately. The result is collected on a later ISR tick
+  // through adc_ready()/adc_value(), giving the ADC ample time to complete.
+  static void adc_start(const pin_t pin);
 
   // Check if ADC is ready for reading
-  static bool adc_ready() { return true; }
+  static bool adc_ready();
 
-  // Current value of the ADC register
-  static uint16_t adc_value() { return adc_result; }
+  // Current value of the ADC register (also clears the conversion state)
+  static uint16_t adc_value();
 
   // Set the PWM duty cycle for the pin to the given value.
   // Optionally invert the duty cycle [default = false]

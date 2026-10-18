@@ -27,7 +27,11 @@
 #include "../../inc/MarlinConfig.h"
 #include "../shared/Delay.h"
 
+#include <ADC.hpp>
+#include <Analog.h>
+
 uint16_t MarlinHAL::adc_result;
+bool MarlinHAL::adc_conv_active = false;
 
 #if ENABLED(POSTMORTEM_DEBUGGING)
   extern void install_min_serial();
@@ -74,6 +78,80 @@ void MarlinHAL::init() {
 
   // Register min serial
   TERN_(POSTMORTEM_DEBUGGING, install_min_serial());
+}
+
+// ADC: non-blocking single-conversion with hardware oversampling.
+// adc_init() performs the one-time hardware setup; adc_start() only triggers a
+// conversion; adc_ready()/adc_value() collect the result on a later ISR tick.
+void MarlinHAL::adc_init() {
+  analogReadResolution(HAL_ADC_RESOLUTION);
+
+  auto res = adc::ADC::get_instance(adc::ADC_Base::ADC0_BASE);
+  if (res.error() != adc::ADC_Error_Type::OK) return;
+  auto &adc = res.value();
+
+  // Single regular conversion, software trigger, right alignment.
+  adc.set_data_alignment(adc::Data_Alignment::DATA_ALIGN_RIGHT);
+  adc.set_channel_length(adc::Channel_Group_Type::REGULAR_CHANNEL, 0);
+  adc.set_mode(adc::Sync_Mode::SM_FREE);
+  adc.set_external_trigger_enable(adc::Channel_Group_Type::REGULAR_CHANNEL, true);
+  adc.set_external_group_source(adc::Channel_Group_Type::REGULAR_CHANNEL,
+                                adc::External_Trigger_Source::ADC0_1_REGULAR_SOFTWARE);
+
+  #ifdef GD32F303RE
+    // 128x hardware oversampling, shift back to HAL resolution, 12-bit output.
+    // 128 samples × 68 cycles / 120 MHz = 72.5 µs — spans >2 full periods of
+    // the 31.4 kHz fan PWM, so PWM-coupled noise averages out completely.
+    adc.set_oversampling_configuration(adc::Oversampling_Conversion::OVERSAMPLING_CONVERT_ALL,
+                                       adc::Oversampling_Shift::OVERSAMPLING_SHIFT_7BIT,
+                                       adc::Oversampling_Ratio::OVERSAMPLING_RATIO_MUL128);
+    adc.set_oversampling_enable(true);
+  #endif
+
+  adc.enable();
+  adc.set_temperature_voltage_reference_enable(true);
+
+  // Errata 2.4.1 delay for VDDA stabilization.
+  for (uint32_t i = 0; i < 40000; ++i) { __asm__ volatile ("nop"); }
+
+  // Reset + run calibration once.
+  adc.calibration_enable();
+
+  adc_conv_active = false;
+}
+
+void MarlinHAL::adc_start(const pin_t pin) {
+  auto res = adc::ADC::get_instance(adc::ADC_Base::ADC0_BASE);
+  if (res.error() != adc::ADC_Error_Type::OK) { adc_conv_active = false; return; }
+  auto &adc = res.value();
+
+  const adc::ADC_Channel channel = getAdcChannelFromPin(pin);
+  if (channel == adc::ADC_Channel::INVALID) { adc_conv_active = false; return; }
+
+  // Long sample time is required for the high-impedance thermistor divider.
+  adc.set_regular_channel_sequence(0, channel, adc::ADC_Sample_Time::SAMPLETIME_55_5_CYCLES);
+
+  // Trigger the (oversampled) conversion and return without waiting for EOC.
+  adc.set_software_trigger_group(adc::Channel_Group_Type::REGULAR_CHANNEL);
+  adc_conv_active = true;
+}
+
+bool MarlinHAL::adc_ready() {
+  if (!adc_conv_active) return false;
+  auto res = adc::ADC::get_instance(adc::ADC_Base::ADC0_BASE);
+  if (res.error() != adc::ADC_Error_Type::OK) return false;
+  return res.value().get_flag(adc::Status_Flags::FLAG_EOC);
+}
+
+uint16_t MarlinHAL::adc_value() {
+  auto res = adc::ADC::get_instance(adc::ADC_Base::ADC0_BASE);
+  if (res.error() != adc::ADC_Error_Type::OK) return 0;
+  auto &adc = res.value();
+  const uint32_t data = adc.get_regular_data();
+  adc.clear_flag(adc::Status_Flags::FLAG_EOC);
+  adc_conv_active = false;
+  adc_result = static_cast<uint16_t>(data);
+  return adc_result;
 }
 
 // Returns the reset source based on the flags set in the RCU module
