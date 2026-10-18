@@ -1,14 +1,14 @@
 /**
  * Marlin 3D Printer Firmware - GD32 MFL EEPROM emulation with wear-leveling
- * Строгая логика старого STM32-проекта:
- * - фиксированный регион из HAL/shared/eeprom_api.h
+ * - регион EEPROM: последние 64KB flash (через fmc::Bank0_End_Address)
  * - поиск непустого DWORD по всему региону → вычисление слота
- * - запись в новый слот вниз по номерам
- * - стирание всего региона при исчерпании слотов
+ * - запись в новый слот вниз по номерам (кольцевой wear-leveling)
  * - реализации FLASH_If_Erase / FLASH_If_Write под MFL
  */
 
 #include "../../platforms.h"
+
+#ifdef ARDUINO_ARCH_MFL
 
 #include "../../../inc/MarlinConfig.h"
 #include "../../../libs/crc16.h"
@@ -19,7 +19,8 @@
 #include "../../shared/eeprom_api.h"
 #include "FMC.hpp"
 
-using namespace fmc;
+using fmc::FMC;
+using fmc::FMC_Error_Type;
 
 // -------------------------------
 // Конфигурация
@@ -29,17 +30,17 @@ using namespace fmc;
 #endif
 
 #ifndef FLASH_PAGE_SIZE
-  #define FLASH_PAGE_SIZE 0x800U      // 2KB
+  #define FLASH_PAGE_SIZE 0x800U      // 2KB (GD32F303RE)
 #endif
 
 #define EMPTY_UINT32 0xFFFFFFFFU
 #define EMPTY_UINT8  0xFFU
 
 // -------------------------------
-//Костыль, пересмотреть позже реализацию! 
-// Регион EEPROM из shared
-static constexpr uint32_t REGION_BEGIN    = FLASH_OUTAGE_DATA_ADDR;
-static constexpr uint32_t REGION_SIZE     = FLASH_OUTAGE_DATA_SIZE;
+// Регион EEPROM: последние 64KB flash (как в EEPROM_RESERVED в MFL_LINK.ld)
+// -------------------------------
+static constexpr uint32_t REGION_SIZE     = 0x10000U;
+static constexpr uint32_t REGION_BEGIN    = fmc::Bank0_End_Address + 1U - REGION_SIZE;
 static constexpr uint32_t REGION_END_EXCL = REGION_BEGIN + REGION_SIZE;
 
 static_assert((MARLIN_EEPROM_SIZE % FLASH_PAGE_SIZE) == 0, "MARLIN_EEPROM_SIZE must align to FLASH_PAGE_SIZE");
@@ -56,27 +57,21 @@ static uint8_t ram_eeprom[MARLIN_EEPROM_SIZE] __attribute__((aligned(4))) = {0};
 static bool eeprom_data_written = false;
 static int current_slot = -1;
 
-//PersistentStore persistentStore;
-
-#ifndef MARLIN_EEPROM_SIZE
-  #define MARLIN_EEPROM_SIZE size_t(E2END + 1)
-#endif
-size_t PersistentStore::capacity() { return MARLIN_EEPROM_SIZE; }
+size_t PersistentStore::capacity() { return MARLIN_EEPROM_SIZE - eeprom_exclude_size; }
 
 // -------------------------------
-// Старт доступа (поиск слота как в оригинале)
+// Старт доступа (поиск слота)
 // -------------------------------
 bool PersistentStore::access_start() {
 
-  // В STM32-оригинале был EEPROM.begin() для совместимости; в MFL не нужен.
-
+  // Если слот не найден или данные были изменены, ищем слот и загружаем в RAM
   if (current_slot == -1 || eeprom_data_written) {
     if (eeprom_data_written)
       SERIAL_ECHOLNPGM("Dangling EEPROM write_data");
 
     current_slot = -1;
 
-    // Оригинальная логика: сканируем по DWORD весь регион
+    // Сканируем по DWORD весь регион
     uint32_t address = REGION_BEGIN;
     while (address < REGION_END_EXCL) {
       const uint32_t v = *(__IO const uint32_t*)address;
@@ -306,7 +301,7 @@ uint32_t PersistentStore::FLASH_If_Write(uint32_t destination, uint32_t *p_sourc
 
   if (!ok) return FLASHIF_WRITING_ERROR;
 
-  // Доп. контроль, как в STM32: сверка слова
+  // Доп. контроль: сверка слова
   addr = destination;
   for (uint32_t i = 0; i < length_words; ++i, addr += 4) {
     if (*(__IO const uint32_t*)addr != p_source[i]) {
@@ -318,4 +313,5 @@ uint32_t PersistentStore::FLASH_If_Write(uint32_t destination, uint32_t *p_sourc
 }
 
 #endif // FLASH_EEPROM_EMULATION
+#endif // ARDUINO_ARCH_MFL
 

@@ -26,11 +26,7 @@
 
 #include "../../libs/crc16.h"
 
-// Костыль, пересмотреть позже!
-#define FLASH_OUTAGE_DATA_ADDR      0x0807F000
-#define FLASH_OUTAGE_DATA_SIZE      0x10000
-#define FLASH_OUTAGE_DATA_NUMBER    192
-enum 
+enum
 {
   FLASHIF_OK = 0,
   FLASHIF_ERASEKO,
