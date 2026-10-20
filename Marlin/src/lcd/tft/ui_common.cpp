@@ -449,6 +449,9 @@ void MarlinUI::clear_lcd() {
     draw_menu_navigation = false;
   #endif
 
+  // The whole display is about to be erased, so nothing of the last edit layout remains
+  invalidate_edit_screen_layout();
+
   tft.queue.reset();
   tft.fill(0, 0, TFT_WIDTH, TFT_HEIGHT, COLOR_BACKGROUND);
   cursor.set(0, 0);

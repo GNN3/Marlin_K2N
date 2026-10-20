@@ -672,14 +672,40 @@ void TFT::drawSimpleBtn(const char *label, uint16_t x, uint16_t y, uint16_t w, u
 
 #endif // TOUCH_SCREEN
 
+#if DISABLED(TOUCH_SCREEN)
+  // While an item is being edited with an encoder only the value line and the slider
+  // follow the wheel. The title, the min/max labels and everything else stay as they
+  // were drawn, because re-rendering the whole screen at each step makes the panel
+  // flicker. Any change of the item or its layout — or a display erase (see
+  // MarlinUI::clear_lcd) — brings the full frame back.
+  static FSTR_P drawn_label;               // The item this layout was drawn for…
+  static screenFunc_t drawn_screen;        // …shown on this screen…
+  static int32_t drawn_min, drawn_max;     // …with this encoder range…
+  static bool drawn_item, drawn_layout;    // …with or without a slider, and drawn already
+
+  void invalidate_edit_screen_layout() { drawn_layout = false; }
+#endif
+
 // Low-level draw_edit_screen can be used to draw an edit screen from anyplace
 void MenuEditItemBase::draw_edit_screen(FSTR_P const ftpl, const char * const value/*=nullptr*/) {
   ui.encoder_direction_normal();
   //ui.defer_status_screen(); // Should already be done by MarlinUI
   TERN_(TOUCH_SCREEN, touch.clear());
 
-  tft.canvas(0, 0, TFT_WIDTH, TFT_HEIGHT);
-  tft.set_background(COLOR_BACKGROUND);
+  #if DISABLED(TOUCH_SCREEN)
+    bool redraw_all = !drawn_layout || ftpl != drawn_label || ui.currentScreen != drawn_screen
+                   || itemEdit != drawn_item || minEditValue != drawn_min || maxEditValue != drawn_max;
+    #if ENABLED(AUTO_BED_LEVELING_UBL)
+      redraw_all |= ui.external_control;   // Mesh editing puts extra values on this screen
+    #endif
+  #else
+    constexpr bool redraw_all = true;      // Touch layouts re-register controls on each frame
+  #endif
+
+  if (redraw_all) {
+    tft.canvas(0, 0, TFT_WIDTH, TFT_HEIGHT);
+    tft.set_background(COLOR_BACKGROUND);
+  }
 
   // Only menu item edits get the keypad. Babystep, Move Axis, etc. have no value range to apply it to.
   // Tall displays show it below the slider. Others toggle between slider and keypad.
@@ -697,13 +723,17 @@ void MenuEditItemBase::draw_edit_screen(FSTR_P const ftpl, const char * const va
 
   uint16_t line = 0;
 
-  menu_line(line++);
-  tft_string.set(ftpl, itemIndex, itemStringC, itemStringF);
-  // When the value line shows the entry, append the current value
-  // to the title for reference. Read here, before ftostr52() below can clobber it.
-  if (editing && value) tft_string.add_value(value);
-  tft_string.trim();
-  tft.add_text(tft_string.center(TFT_WIDTH), MENU_TEXT_Y, COLOR_MENU_TEXT, tft_string);
+  // The title is part of the fixed layout, so it is only drawn when that changes
+  if (redraw_all) {
+    menu_line(line);
+    tft_string.set(ftpl, itemIndex, itemStringC, itemStringF);
+    // When the value line shows the entry, append the current value
+    // to the title for reference. Read here, before ftostr52() below can clobber it.
+    if (editing && value) tft_string.add_value(value);
+    tft_string.trim();
+    tft.add_text(tft_string.center(TFT_WIDTH), MENU_TEXT_Y, COLOR_MENU_TEXT, tft_string);
+  }
+  line++;
 
   TERN_(AUTO_BED_LEVELING_UBL, if (ui.external_control) line++);  // ftostr52() will overwrite *value so *value has to be displayed first
 
@@ -827,19 +857,22 @@ void MenuEditItemBase::draw_edit_screen(FSTR_P const ftpl, const char * const va
         touch.add_control(SLIDER, slider_x, slider_y - 8, slider_w, 32, maxEditValue);
       #endif
 
-      // Min / Max labels (tap to set), vertically centered on the slider bar (slider_y + 8)
-      const int w = slider_x - 2, h = FONT_LINE_HEIGHT, label_y = slider_y + 8 - h / 2;
-      tft_string.set(shortenNum(to_str_edit_t(valueToString)(minEditValue)));
-      tft.canvas(0, label_y, w, h);
-      tft.set_background(COLOR_BACKGROUND);
-      tft.add_text(tft_string.center(w), tft_string.vcenter(h), COLOR_WHITE, tft_string, w);
-      TERN_(TOUCH_SCREEN, touch.add_control(CALLBACK, 0, label_y, w, h, intptr_t(setValue), 0));
+      // Min / Max labels (tap to set), vertically centered on the slider bar (slider_y + 8).
+      // Fixed for the item, so they come with the full frame only.
+      if (redraw_all) {
+        const int w = slider_x - 2, h = FONT_LINE_HEIGHT, label_y = slider_y + 8 - h / 2;
+        tft_string.set(shortenNum(to_str_edit_t(valueToString)(minEditValue)));
+        tft.canvas(0, label_y, w, h);
+        tft.set_background(COLOR_BACKGROUND);
+        tft.add_text(tft_string.center(w), tft_string.vcenter(h), COLOR_WHITE, tft_string, w);
+        TERN_(TOUCH_SCREEN, touch.add_control(CALLBACK, 0, label_y, w, h, intptr_t(setValue), 0));
 
-      tft_string.set(shortenNum(to_str_edit_t(valueToString)(minEditValue + maxEditValue)));
-      tft.canvas(TFT_WIDTH - w, label_y, w, h);
-      tft.set_background(COLOR_BACKGROUND);
-      tft.add_text(tft_string.center(w), tft_string.vcenter(h), COLOR_WHITE, tft_string, w);
-      TERN_(TOUCH_SCREEN, touch.add_control(CALLBACK, TFT_WIDTH - w, label_y, w, h, intptr_t(setValue), maxEditValue));
+        tft_string.set(shortenNum(to_str_edit_t(valueToString)(minEditValue + maxEditValue)));
+        tft.canvas(TFT_WIDTH - w, label_y, w, h);
+        tft.set_background(COLOR_BACKGROUND);
+        tft.add_text(tft_string.center(w), tft_string.vcenter(h), COLOR_WHITE, tft_string, w);
+        TERN_(TOUCH_SCREEN, touch.add_control(CALLBACK, TFT_WIDTH - w, label_y, w, h, intptr_t(setValue), maxEditValue));
+      }
     }
 
     #if ENABLED(TOUCH_SCREEN)
@@ -858,6 +891,13 @@ void MenuEditItemBase::draw_edit_screen(FSTR_P const ftpl, const char * const va
 
   // The 123 toggle only where the keypad can't share the screen with the slider
   tft.draw_edit_screen_buttons(can_keypad && !TERN0(TOUCH_SCREEN, keypad_with_slider), keypad_only || TERN0(TOUCH_SCREEN, keypad_below));
+
+  #if DISABLED(TOUCH_SCREEN)
+    // The fixed parts are on the screen now, so the next step only needs value and slider
+    drawn_label = ftpl; drawn_screen = ui.currentScreen;
+    drawn_min = minEditValue; drawn_max = maxEditValue;
+    drawn_item = itemEdit; drawn_layout = true;
+  #endif
 }
 
 #if ENABLED(TOUCH_SCREEN)
