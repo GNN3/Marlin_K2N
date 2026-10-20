@@ -93,5 +93,18 @@
     #error "Serial Port 4 RX IO pins conflict with another pin on the board."
   #endif
 #endif
+
+// RX-DMA U(S)ART назначает ядру: USART0 -> DMA0 CH4, USART1 -> DMA0 CH5,
+// USART2 -> DMA0 CH2 (см. UsartSerial.hpp::get_dma_channel). Тот же DMA0 CH2
+// занят под SPI0_TX в HAL/GD32_MFL/HAL_SPI.cpp, который используется TFT-дисплеем.
+#if ENABLED(SERIAL_DMA) && SERIAL_IN_USE(2) && HAS_GRAPHICAL_TFT
+  #error "SERIAL_DMA on serial port 2 conflicts with the TFT SPI DMA (DMA0 Channel 2). Use another SERIAL_PORT/LCD_SERIAL_PORT or disable SERIAL_DMA."
+#endif
+
+// Приоритет прерываний UART должен быть ниже приоритета шагового ISR
+#if UART_IRQ_PRIORITY <= 1
+  #error "UART_IRQ_PRIORITY must be greater than 1 (the core uses priority 1 for the step-critical timers)."
+#endif
+
 #undef CHECK_SERIAL_PIN
 #undef _CHECK_SERIAL_PIN

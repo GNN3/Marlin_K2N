@@ -27,51 +27,94 @@
 #include "../../inc/MarlinConfig.h"
 #include "MarlinSerial.h"
 
+// Количество Marlin-портов должно совпадать с числом U(S)ART-блоков ядра
+static_assert(GD32_MFL_SERIAL_COUNT == static_cast<int>(static_cast<size_t>(usart::USART_Base::INVALID)),
+              "Serial port count does not match the number of U(S)ART blocks in the core.");
+
+// ---------------------------------------------------------------------------
+// Индекс Marlin-порта (0..4) для каждого U(S)ART-блока.
+// Вычисляется ОДИН раз в begin(), поэтому горячий путь (available/read/peek,
+// т.е. каждый принятый байт) делает только O(1) обращение к таблице, а не
+// switch на каждый байт. Неинициализированные ячейки = -1 -> 0xFF -> ранний выход.
+// ---------------------------------------------------------------------------
+static int8_t port_index_of_base[static_cast<size_t>(usart::USART_Base::INVALID)] = { -1, -1, -1, -1, -1 };
+
+static constexpr int8_t compute_serial_index(usart::USART_Base base) {
+  // Компилятор сводит это к таблице переходов; вызывается один раз на порт
+  switch (base) {
+    case usart::USART_Base::USART0_BASE: return 0;
+    case usart::USART_Base::USART1_BASE: return 1;
+    case usart::USART_Base::USART2_BASE: return 2;
+    case usart::USART_Base::UART3_BASE:  return 3;
+    case usart::USART_Base::UART4_BASE:  return 4;
+    default:                             return -1;   // нераспознанный базовый адрес
+  }
+}
+
+static inline uint8_t get_serial_index(usart::USART_Base base) {
+  const size_t i = static_cast<size_t>(base);
+  if (i >= GD32_MFL_SERIAL_COUNT) return 0xFF;
+  const int8_t idx = port_index_of_base[i];
+  return idx < 0 ? 0xFF : static_cast<uint8_t>(idx);
+}
+
+static inline IRQn_Type usart_irqn_of(usart::USART_Base base) {
+  switch (base) {
+    case usart::USART_Base::USART0_BASE: return USART0_IRQn;
+    case usart::USART_Base::USART1_BASE: return USART1_IRQn;
+    case usart::USART_Base::USART2_BASE: return USART2_IRQn;
+    case usart::USART_Base::UART3_BASE:  return UART3_IRQn;
+    case usart::USART_Base::UART4_BASE:  return UART4_IRQn;
+    default:                             return INVALID_IRQ;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EMERGENCY_PARSER
+// ---------------------------------------------------------------------------
 #if ENABLED(EMERGENCY_PARSER)
   #include "../../feature/e_parser.h"
-  
-  // Состояния парсеров для каждого порта (0-4)
-  static EmergencyParser::State e_states[5];
 
-  // Получение индекса порта
-  static uint8_t get_serial_index(usart::USART_Base base) {
-    // Преобразуем базовый адрес в индекс через switch
-    // Компилятор оптимизирует это в таблицу переходов
-    switch(base) {
-      case usart::USART_Base::USART0_BASE: return 0;
-      case usart::USART_Base::USART1_BASE: return 1;
-      case usart::USART_Base::USART2_BASE: return 2;
-      case usart::USART_Base::UART3_BASE:  return 3;
-      case usart::USART_Base::UART4_BASE:  return 4;
-      case usart::USART_Base::INVALID:     return 0;
-    }
-    return 0; // На случай нераспознанного базового адреса
-  }
+  // Состояния парсеров для каждого порта (0..4)
+  static EmergencyParser::State e_states[GD32_MFL_SERIAL_COUNT];
 
-  // Реализация для DMA режима
+  // Режим DMA: «теневая» позиция, до которой EMERGENCY_PARSER уже просмотрен
   #if ENABLED(SERIAL_DMA)
-    static size_t dma_shadow_heads[5];
+    static size_t dma_shadow_heads[GD32_MFL_SERIAL_COUNT];
   #endif
+#endif
 
-  // Реализация для IRQ режима
-  #if !ENABLED(SERIAL_DMA)
-    // Указатели на экземпляры для прерываний
-    static MarlinSerial* instances[5];
+// ---------------------------------------------------------------------------
+// Режим IRQ (без DMA): трамплины прерываний
+// ---------------------------------------------------------------------------
+#if DISABLED(SERIAL_DMA)
+  // Указатели на экземпляры нужны и EMERGENCY_PARSER, и обработчику ошибок
+  static MarlinSerial* instances[GD32_MFL_SERIAL_COUNT];
 
-    // Обработчики прерываний для каждого порта
+  #if ENABLED(EMERGENCY_PARSER)
     static void emergency_isr_0() { if (instances[0]) instances[0]->emergency_isr(); }
     static void emergency_isr_1() { if (instances[1]) instances[1]->emergency_isr(); }
     static void emergency_isr_2() { if (instances[2]) instances[2]->emergency_isr(); }
     static void emergency_isr_3() { if (instances[3]) instances[3]->emergency_isr(); }
     static void emergency_isr_4() { if (instances[4]) instances[4]->emergency_isr(); }
 
-    // Таблица обработчиков
-    static constexpr void (*isr_handlers[5])() = {
-      emergency_isr_0, emergency_isr_1, emergency_isr_2, 
+    static constexpr void (*isr_handlers[GD32_MFL_SERIAL_COUNT])() = {
+      emergency_isr_0, emergency_isr_1, emergency_isr_2,
       emergency_isr_3, emergency_isr_4
     };
   #endif
-#endif // EMERGENCY_PARSER
+
+  static void usart_error_0() { if (instances[0]) instances[0]->handle_usart_error(); }
+  static void usart_error_1() { if (instances[1]) instances[1]->handle_usart_error(); }
+  static void usart_error_2() { if (instances[2]) instances[2]->handle_usart_error(); }
+  static void usart_error_3() { if (instances[3]) instances[3]->handle_usart_error(); }
+  static void usart_error_4() { if (instances[4]) instances[4]->handle_usart_error(); }
+
+  static constexpr void (*err_handlers[GD32_MFL_SERIAL_COUNT])() = {
+    usart_error_0, usart_error_1, usart_error_2,
+    usart_error_3, usart_error_4
+  };
+#endif
 
 using namespace arduino;
 
@@ -111,14 +154,34 @@ void MarlinSerial::begin(unsigned long baudrate, uint16_t config) {
   // Инициализируем базовый драйвер
   UsartSerial::begin(baudrate, config, ENABLED(SERIAL_DMA));
 
-  #if ENABLED(EMERGENCY_PARSER)
-    uint8_t idx = get_serial_index(usart_.get_base());
-    e_states[idx] = EmergencyParser::State::EP_RESET;
+  const usart::USART_Base base = usart_.get_base();
 
-    #if ENABLED(SERIAL_DMA)
-      dma_shadow_heads[idx] = 0;
-    #else
-      instances[idx] = this;
+  // Индекс порта вычисляется один раз и дальше используется как таблица
+  const size_t bi = static_cast<size_t>(base);
+  if (bi < GD32_MFL_SERIAL_COUNT) port_index_of_base[bi] = compute_serial_index(base);
+
+  const uint8_t idx = get_serial_index(base);
+  if (idx == 0xFF) return;
+
+  // Ядро выставляет приоритет 1, т.е. ВЫШЕ шагового ISR (STEP_TIMER = 2).
+  // TX обслуживается прерыванием на каждый байт и вытесняет генерацию шагов,
+  // поэтому опускаем UART ниже шагового прерывания.
+  const IRQn_Type irq = usart_irqn_of(base);
+  if (irq != INVALID_IRQ) NVIC_SetPriority(irq, UART_IRQ_PRIORITY);
+
+  #if ENABLED(EMERGENCY_PARSER)
+    e_states[idx] = EmergencyParser::State::EP_RESET;
+  #endif
+
+  #if DISABLED(SERIAL_DMA)
+    instances[idx] = this;
+
+    // Без обработки ошибок драйвер навсегда остаётся в состоянии ERROR:
+    // DATA не читается, RBNE не сбрасывается, прерывание зацикливается,
+    // а available() возвращает 0 -> связь с хостом теряется до перезагрузки.
+    usart_.register_interrupt_callback(usart::Interrupt_Type::INTR_ERRIE, err_handlers[idx]);
+
+    #if ENABLED(EMERGENCY_PARSER)
       usart_.register_interrupt_callback(usart::Interrupt_Type::INTR_RBNEIE, isr_handlers[idx]);
     #endif
   #endif
@@ -130,39 +193,73 @@ void MarlinSerial::updateRxDmaBuffer() {
   UsartSerial::updateRxDmaBuffer();
 
   #if ENABLED(EMERGENCY_PARSER) && ENABLED(SERIAL_DMA)
-    uint8_t idx = get_serial_index(usart_.get_base());
-    
+    const uint8_t idx = get_serial_index(usart_.get_base());
+    if (idx == 0xFF) return;
+
     auto& ring = usart_.get_rx_buffer();
-    size_t current_head = ring.getHead();
-    const uint8_t* buffer = ring.data();
-    size_t capacity = ring.capacity();
-    
+    const size_t capacity = ring.capacity();
+
     // Быстрый выход если нет данных
     if (capacity == 0) return;
-    
-    // Обрабатываем новые данные
+
+    // Ядро вычисляет head как (размер буфера - CNDTR). В момент, когда круговой
+    // DMA дописал цикл (CNDTR == 0), head == capacity, что выходит за пределы
+    // индексов буфера и даёт до capacity «мусорных» байт для чтения.
+    size_t current_head = ring.getHead();
+    if (current_head >= capacity) {
+      current_head %= capacity;
+      usart_.modify_rx_buffer_head(static_cast<uint8_t>(current_head));
+    }
+
+    const uint8_t* buffer = ring.data();
     size_t& shadow = dma_shadow_heads[idx];
-    while (shadow != current_head) {
+    if (shadow >= capacity) shadow = 0;
+
+    // Ровно то количество байт, которое DMA дописал с прошлого опроса,
+    // и никогда больше размера буфера.
+    size_t pending = (current_head + capacity - shadow) % capacity;
+    if (pending > capacity) pending = capacity;
+
+    while (pending--) {
       emergency_parser.update(e_states[idx], buffer[shadow]);
-      
-      shadow++;
-      if (shadow >= capacity) shadow = 0;
+      if (++shadow == capacity) shadow = 0;
     }
   #endif
 }
 
 // Обработчик прерывания для IRQ режима
-#if !ENABLED(SERIAL_DMA)
-void MarlinSerial::emergency_isr() {
-  #if ENABLED(EMERGENCY_PARSER)
-    // Читаем байт из регистра (сбрасывает флаг прерывания)
-    uint8_t c = usart_.receive_data8();
-    
-    // Обрабатываем emergency команду
-    uint8_t idx = get_serial_index(usart_.get_base());
-    emergency_parser.update(e_states[idx], c);
-  #endif
-}
-#endif
+#if DISABLED(SERIAL_DMA)
+
+  void MarlinSerial::emergency_isr() {
+    #if ENABLED(EMERGENCY_PARSER)
+      const uint8_t idx = get_serial_index(usart_.get_base());
+      if (idx == 0xFF) return;
+
+      // Байт уже прочитан ядром (USART::handle_rx_interrupt) и лежит в rx-буфере.
+      // Повторное чтение DATA при RBNE = 0 даёт неопределённое/дублирующее
+      // значение, из-за чего конечный автомат не распознавал M112 / M410.
+      emergency_parser.update(e_states[idx], usart_.get_last_data());
+    #endif
+  }
+
+  // Восстановление работоспособности после ORERR / NERR / FERR
+  void MarlinSerial::handle_usart_error() {
+    // В ветке ошибок ядро DATA не читает, поэтому RBNE остаётся установленным
+    // и прерывание генерируется снова. Чтение DATA сбрасывает RBNE и флаги ошибок.
+    (void)usart_.receive_data8();
+    usart_.handle_errors();
+    usart_.get_config().state = usart::USART_State::IDLE;
+    usart_.flush_buffer(true);
+
+    #if ENABLED(EMERGENCY_PARSER)
+      const uint8_t idx = get_serial_index(usart_.get_base());
+      if (idx != 0xFF) e_states[idx] = EmergencyParser::State::EP_RESET;
+    #endif
+
+    usart_.set_interrupt_enable(usart::Interrupt_Type::INTR_RBNEIE, true);
+  }
+
+#endif // !SERIAL_DMA
 
 #endif // ARDUINO_ARCH_MFL
+

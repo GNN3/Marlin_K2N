@@ -34,10 +34,28 @@
 #define SERIAL_INDEX_MIN 0
 #define SERIAL_INDEX_MAX 4
 
+// serial_ports.h выполняет #undef SERIAL_INDEX_MIN/MAX в конце, поэтому
+// количество портов вычисляется здесь и дальше используется как constexpr.
+namespace gd32_mfl_serial { inline constexpr uint8_t count = SERIAL_INDEX_MAX - SERIAL_INDEX_MIN + 1; }
+#define GD32_MFL_SERIAL_COUNT gd32_mfl_serial::count
+
 #include "../shared/serial_ports.h"
 
 #if defined(LCD_SERIAL_PORT) && ANY(HAS_DGUS_LCD, EXTENSIBLE_UI)
   #define LCD_SERIAL_TX_BUFFER_FREE() LCD_SERIAL.availableForWrite()
+#endif
+
+// Буферы RX/TX задаёт ядро MFL: 128 и 64 байта (UsartSerial.hpp).
+// Marlin-настройки RX_BUFFER_SIZE / TX_BUFFER_SIZE на этой платформе не
+// применяются, а переопределять -DUSART_RX_BUFFER_SIZE нельзя: ядро вычисляет
+// head DMA-приёма по жёстко зашитому USART_RX_BUFFER_SIZE = 128.
+
+// Приоритет прерываний U(S)ART. Ядро выставляет 1 (UsartSerial.cpp), что выше
+// приоритета шагового ISR (STEP_TIMER_IRQ_PRIORITY = 2 в HAL/GD32_MFL/timers.cpp).
+// TX обслуживается по TBEIE на каждый байт, поэтому более высокий приоритет UART
+// вытесняет генерацию шагов и даёт джитр шагов. Держим UART ниже шагового ISR.
+#ifndef UART_IRQ_PRIORITY
+  #define UART_IRQ_PRIORITY 3
 #endif
 
 using namespace arduino;
@@ -54,16 +72,21 @@ struct MarlinSerial : public UsartSerial {
   // Обязательно override, так как это виртуальный метод базового класса
   void updateRxDmaBuffer() override;
 
-  // Метод обработки прерывания для режима IRQ (No DMA)
-  // Должен быть public, чтобы статические функции-трамплины в .cpp могли его вызвать
-  #if !ENABLED(SERIAL_DMA)
-    void emergency_isr();
+  // Обработчики для режима IRQ (No DMA).
+  // Должны быть public, чтобы статические функции-трамплины в .cpp могли их вызвать
+  #if DISABLED(SERIAL_DMA)
+    // Восстановление после ORERR / NERR / FERR. Без него драйвер навсегда
+    // остаётся в состоянии ERROR и связь с хостом теряется.
+    void handle_usart_error();
+
+    #if ENABLED(EMERGENCY_PARSER)
+      void emergency_isr();
+    #endif
   #endif
 
-  // Заглушка, требуемая ядром Marlin (если DMA выключен)
-  #if DISABLED(SERIAL_DMA)
-    FORCE_INLINE static uint8_t buffer_overruns() { return 0; }
-  #endif
+  // Заглушка, требуемая ядром Marlin (M111, DGUS). Определяется всегда,
+  // иначе сборка ломается при SERIAL_STATS_RX_BUFFER_OVERRUNS / SERIAL_DMA.
+  FORCE_INLINE static uint8_t buffer_overruns() { return 0; }
 
 protected:
   // Наследуем конструкторы UsartSerial

@@ -43,6 +43,11 @@
   #define STEP_TIMER_IRQ_PRIORITY STEP_TIMER_IRQ_PRIORITY_DEFAULT
 #endif
 
+// Прерывания U(S)ART (см. HAL/GD32_MFL/MarlinSerial.h) обслуживаются по TBEIE
+// на каждый переданный байт и не должны вытеснять генерацию шагов.
+static_assert(UART_IRQ_PRIORITY > STEP_TIMER_IRQ_PRIORITY,
+              "UART_IRQ_PRIORITY must be a lower priority (larger value) than STEP_TIMER_IRQ_PRIORITY.");
+
 #ifndef TEMP_TIMER_IRQ_PRIORITY
   #define TEMP_TIMER_IRQ_PRIORITY TEMP_TIMER_IRQ_PRIORITY_DEFAULT
 #endif
