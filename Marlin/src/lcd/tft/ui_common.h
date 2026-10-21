@@ -170,6 +170,15 @@ void text_line(const uint16_t y, uint16_t color=COLOR_BACKGROUND);
 void menu_line(const uint8_t row, uint16_t color=COLOR_BACKGROUND);
 uint16_t menu_item(const uint8_t row, bool sel = false);
 
+// Encoder-only Color UI edit screens leave the fixed parts of their layout drawn and
+// refresh just the value line and the slider. Anything that erases the display must
+// reset that state so the next edit screen draws everything again.
+#if ENABLED(TFT_COLOR_UI) && DISABLED(TOUCH_SCREEN)
+  void invalidate_edit_screen_layout();
+#else
+  inline void invalidate_edit_screen_layout() {}
+#endif
+
 typedef void (*screenFunc_t)();
 void add_control(
   uint16_t x, uint16_t y, TouchControlType control_type, intptr_t data, MarlinImage image, bool is_enabled=true,
