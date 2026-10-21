@@ -9,10 +9,8 @@ export PRETTIER_VERSION
 
 # Find a Python 3 interpreter
 ifeq ($(OS),Windows_NT)
-	# Windows: use `where` – fall back through the three common names
-	PYTHON := $(shell which python 2>nul || which python3 2>nul || which py 2>nul)
-	# Windows: Use Python script to find pins files
-	ALL_PINS := $(shell $(PYTHON) $(MAKESCRIPTS_DIR)/find.py Marlin/src/pins -mindepth 2 -name 'pins_*.h')
+	# Windows: use the first of the three common names that runs
+	PYTHON := $(if $(filter ok,$(shell python -c "print('ok')" 2>/dev/null)),python,$(if $(filter ok,$(shell python3 -c "print('ok')" 2>/dev/null)),python3,py))
 else
 	# POSIX: use `command -v` – prefer python3 over python
 	PYTHON := $(shell command -v python3 2>/dev/null || command -v python 2>/dev/null)
